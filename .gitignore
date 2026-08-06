@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+.output/
+.nitro/
+.vercel/output/
+
+# Local Vercel CLI state
+.vercel/
+
+# Wrangler / Cloudflare
+.wrangler/
+
+# Env files
+.env
+.env.local
+.env.*.local
+
+# Logs & temp
+*.log
+.DS_Store
+
+# Editor
+.idea/
+.vscode/*
+!.vscode/extensions.json
