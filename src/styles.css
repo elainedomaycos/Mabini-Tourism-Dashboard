@@ -160,51 +160,88 @@
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
   }
-  h1, h2, h3, h4, h5 {
+  h1,
+  h2,
+  h3,
+  h4,
+  h5 {
     font-family: var(--font-display);
     letter-spacing: -0.02em;
   }
 }
 
 @utility gradient-primary {
-  background-image: linear-gradient(135deg, var(--color-primary), var(--color-primary-glow));
+  background-image: linear-gradient(
+    135deg,
+    var(--color-primary),
+    var(--color-primary-glow)
+  );
 }
 
 @utility gradient-soft {
-  background-image: linear-gradient(180deg, var(--color-primary-soft), transparent);
+  background-image: linear-gradient(
+    180deg,
+    var(--color-primary-soft),
+    transparent
+  );
 }
 
 @utility shadow-elegant {
-  box-shadow: 0 1px 2px 0 color-mix(in oklab, var(--color-primary) 6%, transparent),
-              0 8px 24px -12px color-mix(in oklab, var(--color-primary) 18%, transparent);
+  box-shadow:
+    0 1px 2px 0 color-mix(in oklab, var(--color-primary) 6%, transparent),
+    0 8px 24px -12px color-mix(in oklab, var(--color-primary) 18%, transparent);
 }
 
 @utility shadow-glow {
-  box-shadow: 0 10px 40px -12px color-mix(in oklab, var(--color-primary) 45%, transparent);
+  box-shadow: 0 10px 40px -12px
+    color-mix(in oklab, var(--color-primary) 45%, transparent);
 }
 
 @utility shadow-glow-sm {
-  box-shadow: 0 4px 16px -6px color-mix(in oklab, var(--color-primary) 30%, transparent);
+  box-shadow: 0 4px 16px -6px
+    color-mix(in oklab, var(--color-primary) 30%, transparent);
 }
 
 @keyframes fade-in {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 
 @keyframes fade-in-scale {
-  from { opacity: 0; transform: scale(0.96); }
-  to { opacity: 1; transform: scale(1); }
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
 }
 
 @keyframes shimmer {
-  0% { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
 }
 
 @keyframes slide-in-right {
-  from { opacity: 0; transform: translateX(12px); }
-  to { opacity: 1; transform: translateX(0); }
+  from {
+    opacity: 0;
+    transform: translateX(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
 }
 
 @utility animate-fade-in {
@@ -220,13 +257,20 @@
 }
 
 @utility animate-shimmer {
-  background: linear-gradient(90deg, var(--color-muted) 25%, var(--color-secondary) 50%, var(--color-muted) 75%);
+  background: linear-gradient(
+    90deg,
+    var(--color-muted) 25%,
+    var(--color-secondary) 50%,
+    var(--color-muted) 75%
+  );
   background-size: 200% 100%;
   animation: shimmer 1.5s infinite;
 }
 
 @utility hover-lift {
-  transition: transform 0.2s ease, box-shadow 0.2s ease;
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease;
   &:hover {
     transform: translateY(-2px);
   }

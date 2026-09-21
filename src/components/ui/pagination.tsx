@@ -1,6 +1,11 @@
 import React, { useState, useEffect } from "react";
 import { Button } from "@/components/ui/button";
-import { ChevronLeft, ChevronRight, ChevronsLeft, ChevronsRight } from "lucide-react";
+import {
+  ChevronLeft,
+  ChevronRight,
+  ChevronsLeft,
+  ChevronsRight,
+} from "lucide-react";
 
 interface PaginationProps {
   page: number;
@@ -9,7 +14,12 @@ interface PaginationProps {
   className?: string;
 }
 
-export function Pagination({ page, totalPages, onPageChange, className }: PaginationProps) {
+export function Pagination({
+  page,
+  totalPages,
+  onPageChange,
+  className,
+}: PaginationProps) {
   if (totalPages <= 1) return null;
 
   const pages: (number | "...")[] = [];
@@ -18,7 +28,11 @@ export function Pagination({ page, totalPages, onPageChange, className }: Pagina
   } else {
     pages.push(1);
     if (page > 3) pages.push("...");
-    for (let i = Math.max(2, page - 1); i <= Math.min(totalPages - 1, page + 1); i++) {
+    for (
+      let i = Math.max(2, page - 1);
+      i <= Math.min(totalPages - 1, page + 1);
+      i++
+    ) {
       pages.push(i);
     }
     if (page < totalPages - 2) pages.push("...");
@@ -26,20 +40,34 @@ export function Pagination({ page, totalPages, onPageChange, className }: Pagina
   }
 
   return (
-    <div className={`flex items-center justify-between ${className ?? ""}`}>
+    <div className={`flex items-center justify-between px-4 py-3 ${className ?? ""}`}>
       <span className="text-xs text-muted-foreground">
         Page {page} of {totalPages}
       </span>
       <div className="flex items-center gap-1">
-        <Button variant="outline" size="icon" className="size-8" onClick={() => onPageChange(1)} disabled={page <= 1}>
+        <Button
+          variant="outline"
+          size="icon"
+          className="size-8"
+          onClick={() => onPageChange(1)}
+          disabled={page <= 1}
+        >
           <ChevronsLeft className="size-3.5" />
         </Button>
-        <Button variant="outline" size="icon" className="size-8" onClick={() => onPageChange(page - 1)} disabled={page <= 1}>
+        <Button
+          variant="outline"
+          size="icon"
+          className="size-8"
+          onClick={() => onPageChange(page - 1)}
+          disabled={page <= 1}
+        >
           <ChevronLeft className="size-3.5" />
         </Button>
         {pages.map((p, i) =>
           p === "..." ? (
-            <span key={`e${i}`} className="px-1 text-muted-foreground text-xs">…</span>
+            <span key={`e${i}`} className="px-1 text-muted-foreground text-xs">
+              …
+            </span>
           ) : (
             <Button
               key={p}
@@ -50,12 +78,24 @@ export function Pagination({ page, totalPages, onPageChange, className }: Pagina
             >
               {p}
             </Button>
-          )
+          ),
         )}
-        <Button variant="outline" size="icon" className="size-8" onClick={() => onPageChange(page + 1)} disabled={page >= totalPages}>
+        <Button
+          variant="outline"
+          size="icon"
+          className="size-8"
+          onClick={() => onPageChange(page + 1)}
+          disabled={page >= totalPages}
+        >
           <ChevronRight className="size-3.5" />
         </Button>
-        <Button variant="outline" size="icon" className="size-8" onClick={() => onPageChange(totalPages)} disabled={page >= totalPages}>
+        <Button
+          variant="outline"
+          size="icon"
+          className="size-8"
+          onClick={() => onPageChange(totalPages)}
+          disabled={page >= totalPages}
+        >
           <ChevronsRight className="size-3.5" />
         </Button>
       </div>

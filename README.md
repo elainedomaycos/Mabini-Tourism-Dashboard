@@ -22,15 +22,15 @@ bun run preview      # serve the local production build on http://localhost:3000
 
 ## Scripts
 
-| Script          | Description                                         |
-| --------------- | --------------------------------------------------- |
-| `dev`           | Start the Vite dev server                           |
-| `build`         | Production build — Vercel (Build Output API) bundle |
-| `build:local`   | Production build as a runnable Node server          |
-| `build:dev`     | Production build in development mode                |
-| `preview`       | Serve the `build:local` output on localhost:3000    |
-| `lint`          | ESLint                                              |
-| `format`        | Prettier formatting                                 |
+| Script        | Description                                         |
+| ------------- | --------------------------------------------------- |
+| `dev`         | Start the Vite dev server                           |
+| `build`       | Production build — Vercel (Build Output API) bundle |
+| `build:local` | Production build as a runnable Node server          |
+| `build:dev`   | Production build in development mode                |
+| `preview`     | Serve the `build:local` output on localhost:3000    |
+| `lint`        | ESLint                                              |
+| `format`      | Prettier formatting                                 |
 
 > `bun run preview` serves the local production build on `localhost:3000`. If no
 > local server build exists yet it runs `bun run build:local` automatically.

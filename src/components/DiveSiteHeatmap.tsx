@@ -40,6 +40,7 @@ export function DiveSiteHeatmap({ sites }: { sites: Site[] }) {
     return { min: Math.min(...dives), max: Math.max(...dives) };
   }, [sites]);
 
+  // Initial map creation — run once
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
 
@@ -51,13 +52,39 @@ export function DiveSiteHeatmap({ sites }: { sites: Site[] }) {
     });
 
     L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+      attribution:
+        '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
       maxZoom: 18,
     }).addTo(map);
 
+    mapRef.current = map;
+    setReady(true);
+
+    return () => {
+      map.remove();
+      mapRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Sync markers when sites/filter changes
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+
+    // Clear existing circle markers
+    map.eachLayer((layer: any) => {
+      if (layer instanceof L.CircleMarker) {
+        map.removeLayer(layer);
+      }
+    });
+
     sites.forEach((site) => {
       const color = heatColor(site.dives, diveRange.min, diveRange.max);
-      const radius = 8 + ((site.dives - diveRange.min) / (diveRange.max - diveRange.min || 1)) * 18;
+      const radius =
+        8 +
+        ((site.dives - diveRange.min) / (diveRange.max - diveRange.min || 1)) *
+          18;
 
       const circle = L.circleMarker([site.lat, site.lng], {
         radius,
@@ -75,7 +102,7 @@ export function DiveSiteHeatmap({ sites }: { sites: Site[] }) {
           <div style="font-size:11px;color:#666;margin-bottom:2px">Depth: ${site.depth} · ${site.difficulty}</div>
           <div style="font-size:12px;font-weight:600;color:${color};margin-top:4px">${site.dives.toLocaleString()} dives</div>
         </div>`,
-        { direction: "top", offset: [0, -radius], className: "" }
+        { direction: "top", offset: [0, -radius], className: "" },
       );
 
       circle.on("mouseover", function (this: L.CircleMarker) {
@@ -86,36 +113,76 @@ export function DiveSiteHeatmap({ sites }: { sites: Site[] }) {
       });
     });
 
-    map.fitBounds(
-      sites.map((s) => [s.lat, s.lng] as [number, number]),
-      { padding: [30, 30] }
-    );
-
-    mapRef.current = map;
-    setReady(true);
-
-    return () => {
-      map.remove();
-      mapRef.current = null;
-    };
-  }, [sites, center, diveRange]);
+    if (sites.length > 0) {
+      map.fitBounds(
+        sites.map((s) => [s.lat, s.lng] as [number, number]),
+        { padding: [30, 30] },
+      );
+    }
+    // Ensure proper size after data change (also handles tab becoming visible)
+    setTimeout(() => map.invalidateSize(), 80);
+  }, [sites, diveRange]);
 
   useEffect(() => {
     if (mapRef.current) {
-      setTimeout(() => mapRef.current?.invalidateSize(), 100);
+      // Initial invalidate after mount
+      setTimeout(() => mapRef.current?.invalidateSize(), 150);
     }
   }, [ready]);
 
+  // Re-invalidate when the tab becomes visible (TabsContent is hidden via display:none until active)
+  // Without this, leaflet renders with 0 height and overlaps the next card.
+  useEffect(() => {
+    if (!containerRef.current || !mapRef.current) return;
+    const el = containerRef.current;
+    const observer = new ResizeObserver(() => {
+      mapRef.current?.invalidateSize();
+    });
+    observer.observe(el);
+
+    // Also observe visibility via IntersectionObserver (handles TabsContent hidden -> visible)
+    const io = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            // Delay to allow CSS transition to finish
+            setTimeout(() => mapRef.current?.invalidateSize(), 100);
+            // Re-fit bounds to ensure correct centering after resize
+            if (sites.length > 0) {
+              mapRef.current?.fitBounds(
+                sites.map((s) => [s.lat, s.lng] as [number, number]),
+                { padding: [30, 30] },
+              );
+            }
+          }
+        });
+      },
+      { threshold: 0.1 },
+    );
+    io.observe(el);
+
+    return () => {
+      observer.disconnect();
+      io.disconnect();
+    };
+  }, [ready, sites]);
+
   return (
-    <div className="relative rounded-xl overflow-hidden border border-border/60">
-      <div ref={containerRef} className="h-[420px] w-full bg-muted" />
-      <div className="absolute bottom-3 left-3 z-[1000] flex items-center gap-2 rounded-lg bg-card/90 backdrop-blur border border-border/60 px-3 py-2 shadow-lg">
-        <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">Heatmap</span>
+    <div className="relative rounded-xl overflow-hidden border border-border/60 bg-muted isolate [&_.leaflet-pane]:!z-[1] [&_.leaflet-control]:!z-[2] [&_.leaflet-top]:!z-[2] [&_.leaflet-bottom]:!z-[2]">
+      <div ref={containerRef} className="h-[420px] w-full bg-muted relative z-0 [&_.leaflet-container]:!z-0" />
+      <div className="absolute bottom-3 left-3 z-10 flex items-center gap-2 rounded-lg bg-card/90 backdrop-blur border border-border/60 px-3 py-2 shadow-lg">
+        <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wide">
+          Heatmap
+        </span>
         <div className="flex items-center gap-1">
           <span className="text-[10px] text-muted-foreground">Low</span>
           <div className="flex gap-0.5">
             {["#3b82f6", "#22d3ee", "#facc15", "#ef4444"].map((c) => (
-              <div key={c} className="w-4 h-2.5 rounded-sm" style={{ background: c }} />
+              <div
+                key={c}
+                className="w-4 h-2.5 rounded-sm"
+                style={{ background: c }}
+              />
             ))}
           </div>
           <span className="text-[10px] text-muted-foreground">High</span>
