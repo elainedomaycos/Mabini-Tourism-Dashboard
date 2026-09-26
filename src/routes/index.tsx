@@ -1830,14 +1830,31 @@ function ClientOnlyDiveSiteHeatmap({
   );
 }
 
-const SESSION_IDLE_MS = 60_000;
 const SESSION_COUNTDOWN_S = 20;
+const DEFAULT_SESSION_IDLE_MS = 600 * 1000;
 function SessionGuard({ onExpire }: { onExpire: () => void }) {
   const [warn, setWarn] = useState(false);
   const [countdown, setCountdown] = useState(SESSION_COUNTDOWN_S);
   const lastActivity = useRef(Date.now());
   const warnRef = useRef(false);
   warnRef.current = warn;
+  const [idleMs, setIdleMs] = useState<number | null>(() => {
+    if (typeof window === "undefined") return DEFAULT_SESSION_IDLE_MS;
+    try {
+      const raw = localStorage.getItem("session-timeout");
+      if (raw === null) return DEFAULT_SESSION_IDLE_MS;
+      const sec = Number(raw);
+      if (sec === 0) return null;
+      if (Number.isNaN(sec) || sec < 0) return DEFAULT_SESSION_IDLE_MS;
+      return sec * 1000;
+    } catch {
+      return DEFAULT_SESSION_IDLE_MS;
+    }
+  });
+  const idleMsRef = useRef<number | null>(idleMs);
+  useEffect(() => {
+    idleMsRef.current = idleMs;
+  }, [idleMs]);
 
   useEffect(() => {
     const bump = () => {
@@ -1850,17 +1867,44 @@ function SessionGuard({ onExpire }: { onExpire: () => void }) {
   }, []);
 
   useEffect(() => {
+    const sync = () => {
+      try {
+        const raw = localStorage.getItem("session-timeout");
+        if (raw === null) setIdleMs(DEFAULT_SESSION_IDLE_MS);
+        else {
+          const sec = Number(raw);
+          if (sec === 0) setIdleMs(null);
+          else if (!Number.isNaN(sec) && sec > 0) setIdleMs(sec * 1000);
+        }
+      } catch {}
+    };
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === "session-timeout") sync();
+    };
+    window.addEventListener("storage", onStorage);
+    window.addEventListener("session-timeout-change", sync as EventListener);
+    return () => {
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener("session-timeout-change", sync as EventListener);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (idleMs === null) {
+      setWarn(false);
+      return;
+    }
+    setWarn(false);
     const id = window.setInterval(() => {
-      if (
-        Date.now() - lastActivity.current >= SESSION_IDLE_MS &&
-        !warnRef.current
-      ) {
+      const cur = idleMsRef.current;
+      if (cur === null) return;
+      if (Date.now() - lastActivity.current >= cur && !warnRef.current) {
         setWarn(true);
         setCountdown(SESSION_COUNTDOWN_S);
       }
     }, 1000);
     return () => window.clearInterval(id);
-  }, []);
+  }, [idleMs]);
 
   useEffect(() => {
     if (!warn) return;
@@ -9086,6 +9130,7 @@ function SessionTimeoutSetting() {
     setTimeout_(val);
     try {
       localStorage.setItem("session-timeout", String(val));
+      window.dispatchEvent(new Event("session-timeout-change"));
     } catch {}
     if (val === 0) {
       toast.success("Session timeout disabled");

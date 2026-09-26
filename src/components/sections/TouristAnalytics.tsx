@@ -293,16 +293,16 @@ export function TouristAnalytics() {
         </div>
       </Reveal>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Reveal delay={80}>
-          <SectionCard title="Nationality Distribution">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
+        <Reveal delay={80} className="h-full">
+          <SectionCard title="Nationality Distribution" className="h-full flex flex-col">
             {filteredNationality.length === 0 ? (
-              <div className="flex items-center justify-center h-[200px] text-muted-foreground text-sm">
+              <div className="flex items-center justify-center h-[240px] text-muted-foreground text-sm">
                 No data matches the selected filter.
               </div>
             ) : (
-              <div className="flex items-center gap-6">
-                <div className="w-[200px] h-[200px] cursor-pointer">
+              <div className="flex items-center gap-6 h-[240px]">
+                <div className="w-[200px] h-[200px] cursor-pointer shrink-0">
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
                       <Pie
@@ -370,8 +370,8 @@ export function TouristAnalytics() {
           </SectionCard>
         </Reveal>
 
-        <Reveal delay={120}>
-          <SectionCard title="Dive Level Distribution">
+        <Reveal delay={120} className="h-full">
+          <SectionCard title="Dive Level Distribution" className="h-full flex flex-col">
             <div
               className="h-[240px] cursor-pointer"
               onClick={() => setLevelDrilldown("Open Water")}
