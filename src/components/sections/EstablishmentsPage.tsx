@@ -4,6 +4,11 @@ import { useFilters } from "@/routes/index";
 import { OperatorMgmt } from "@/routes/index";
 import { Establishments } from "@/components/sections/Establishments";
 import { Reveal, StatCard } from "@/components/shared";
+import {
+  useLiveMode,
+  useOperatorApplicationsLive,
+  bucketByMonth,
+} from "@/lib/queries";
 
 export function EstablishmentsPage() {
   const { search, setFilters } = useFilters();
@@ -14,6 +19,25 @@ export function EstablishmentsPage() {
   // on "applications" whenever the inner tab is "active".
   const rawTab = search.tab || "applications";
   const outerTab = rawTab === "registered" ? "registered" : "applications";
+
+  // Live application counts (React Query cache — no extra fetch). The
+  // registry cards stay mock: no establishment table exists yet.
+  const isLive = useLiveMode();
+  const liveApps = useOperatorApplicationsLive();
+  const apps = liveApps.data;
+  const isLiveData = isLive && !!apps;
+  const pendingCount = apps
+    ? apps.filter((a) => a.status === "Pending").length
+    : 0;
+  const approvedCount = apps
+    ? apps.filter((a) => a.status === "Approved").length
+    : 0;
+  const buckets = apps ? bucketByMonth(apps, (a) => a.submitted) : [];
+  const cur = new Date().getMonth();
+  const prev = (cur + 11) % 12;
+  const monthDiff = buckets.length
+    ? buckets[cur].count - buckets[prev].count
+    : 0;
 
   return (
     <div className="space-y-4">
@@ -41,6 +65,7 @@ export function EstablishmentsPage() {
                 value="12"
                 delta="+1"
               />
+              {/* NOTE: stays mock until the establishment registry goes live (Phase 4). */}
             </button>
             <button
               type="button"
@@ -50,8 +75,13 @@ export function EstablishmentsPage() {
               <StatCard
                 icon={Building2}
                 label="Pending Applications"
-                value="5"
-                delta="+2"
+                value={isLiveData ? String(pendingCount) : "5"}
+                delta={
+                  isLiveData
+                    ? `${monthDiff >= 0 ? "+" : ""}${monthDiff}`
+                    : "+2"
+                }
+                up={isLiveData ? monthDiff >= 0 : true}
               />
             </button>
             <button
@@ -62,7 +92,7 @@ export function EstablishmentsPage() {
               <StatCard
                 icon={Building2}
                 label="Active Operators"
-                value="8"
+                value={isLiveData ? String(approvedCount) : "8"}
                 delta=""
               />
             </button>

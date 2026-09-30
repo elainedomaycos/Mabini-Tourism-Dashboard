@@ -20,6 +20,12 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { SectionCard, StatCard, Reveal } from "@/components/shared";
 import {
+  useLiveMode,
+  useReceiptsLive,
+  useInventoryLive,
+  bucketByMonth,
+} from "@/lib/queries";
+import {
   ResponsiveContainer,
   PieChart,
   Pie,
@@ -106,6 +112,43 @@ const renewalForecast = [
 ];
 
 export function DivePassAnalytics() {
+  // Live KPIs for revenue + active passes (verified payment sums and
+  // inventory in-use). Credits-used % and expiring count stay mock: no
+  // ledger/expiry source exists until the annual_pass_holders probe lands.
+  const isLive = useLiveMode();
+  const liveReceipts = useReceiptsLive();
+  const liveInventory = useInventoryLive();
+  const receipts = liveReceipts.data;
+  const inv = liveInventory.data;
+  const isLiveData = isLive && !!receipts && !!inv;
+  const revenueTotal = receipts
+    ? receipts.reduce((a, r) => a + (r.amountNum || 0), 0)
+    : 0;
+  const inUse = inv
+    ? inv.reduce((a, r) => a + (r.totalPasses - r.remainingPasses), 0)
+    : 0;
+  const revBuckets = receipts
+    ? bucketByMonth(
+        receipts,
+        (r) => r.date,
+        (r) => r.amountNum || 0
+      )
+    : [];
+  const useBuckets = inv
+    ? bucketByMonth(
+        inv,
+        (r) => r.createdAt,
+        (r) => r.totalPasses - r.remainingPasses
+      )
+    : [];
+  const curMonth = new Date().getMonth();
+  const prevMonth = (curMonth + 11) % 12;
+  const revDiff = revBuckets.length
+    ? (revBuckets[curMonth]?.total ?? 0) - (revBuckets[prevMonth]?.total ?? 0)
+    : 0;
+  const useDiff = useBuckets.length
+    ? (useBuckets[curMonth]?.total ?? 0) - (useBuckets[prevMonth]?.total ?? 0)
+    : 0;
   return (
     <div className="space-y-6">
       <Reveal>
@@ -113,14 +156,24 @@ export function DivePassAnalytics() {
           <StatCard
             icon={CreditCard}
             label="Total Revenue"
-            value="$6,740"
-            delta="+12%"
+            value={
+              isLiveData
+                ? `₱${Math.round(revenueTotal).toLocaleString()}`
+                : "$6,740"
+            }
+            delta={
+              isLiveData
+                ? `${revDiff >= 0 ? "+" : "-"}₱${Math.round(Math.abs(revDiff)).toLocaleString()}`
+                : "+12%"
+            }
+            up={isLiveData ? revDiff >= 0 : true}
           />
           <StatCard
             icon={TrendingUp}
             label="Active Passes"
-            value="17"
-            delta="+2"
+            value={isLiveData ? String(inUse) : "17"}
+            delta={isLiveData ? `${useDiff >= 0 ? "+" : ""}${useDiff}` : "+2"}
+            up={isLiveData ? useDiff >= 0 : true}
           />
           <StatCard
             icon={Clock}

@@ -29,6 +29,38 @@ function ReceiptImage({
   receipt: any;
   className?: string;
 }) {
+  // Live mode resolves a signed storage URL onto receipt.imageUrl —
+  // show the real upload. A failed signed URL (receipt.imageError) renders
+  // an explicit error — never the stylized mock, which would look like a
+  // loaded receipt. The mock below is demo-data only (no imageUrl, no error).
+  if (receipt?.imageUrl) {
+    return (
+      <div className={`relative overflow-hidden bg-background ${className ?? ""}`}>
+        <img
+          src={receipt.imageUrl}
+          alt={`Receipt ${receipt?.ref ?? ""}`}
+          className="absolute inset-0 h-full w-full object-contain"
+        />
+      </div>
+    );
+  }
+  if (receipt?.imageError) {
+    return (
+      <div
+        className={`relative overflow-hidden bg-background flex flex-col items-center justify-center gap-2 p-6 text-center ${className ?? ""}`}
+      >
+        <X className="size-8 text-destructive" />
+        <div className="text-sm font-semibold text-foreground">
+          Receipt image unavailable
+        </div>
+        <div className="text-xs text-muted-foreground max-w-xs">
+          Could not load the upload for {receipt?.ref ?? receipt?.id ?? "this receipt"}.
+          Check the <span className="font-mono">operator_uploads</span> bucket policy,
+          then close and reopen.
+        </div>
+      </div>
+    );
+  }
   return (
     <div className={`relative overflow-hidden ${className ?? ""}`}>
       <div className="absolute inset-0 bg-gradient-to-br from-primary-soft via-secondary to-primary/20" />

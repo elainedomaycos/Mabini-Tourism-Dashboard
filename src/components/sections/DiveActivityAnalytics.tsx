@@ -34,6 +34,11 @@ import {
   Reveal,
   DrilldownDialog,
 } from "@/components/shared";
+import {
+  useLiveMode,
+  useManifestsLive,
+  bucketByMonth,
+} from "@/lib/queries";
 
 const diveType = [
   { name: "Reef", value: 62 },
@@ -115,6 +120,43 @@ const TYPE_BADGE_MAP: Record<string, string> = {
 export function DiveActivityAnalytics() {
   const [drilldown, setDrilldown] = useState<string | null>(null);
 
+  // Live KPIs for Total + Most Popular Type (real diver counts and dive-type
+  // mix). Peak Hour and Avg Depth stay mock: no hour/depth columns exist.
+  const isLive = useLiveMode();
+  const liveManifests = useManifestsLive();
+  const manifests = liveManifests.data;
+  const isLiveData = isLive && !!manifests;
+  const totalDivers = manifests
+    ? manifests.reduce((a, m) => a + (m.divers || 0), 0)
+    : 0;
+  const diversBuckets = manifests
+    ? bucketByMonth(
+        manifests,
+        (m) => m.date,
+        (m) => m.divers || 0
+      )
+    : [];
+  const curMonth = new Date().getMonth();
+  const prevMonth = (curMonth + 11) % 12;
+  const diversDiff = diversBuckets.length
+    ? (diversBuckets[curMonth]?.total ?? 0) -
+      (diversBuckets[prevMonth]?.total ?? 0)
+    : 0;
+  const topType = (() => {
+    if (!manifests) return null;
+    const counts = new Map<string, number>();
+    for (const m of manifests) {
+      if (m.diveType) counts.set(m.diveType, (counts.get(m.diveType) || 0) + 1);
+    }
+    const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    if (sorted.length === 0) return null;
+    const total = sorted.reduce((a, [, c]) => a + c, 0);
+    return {
+      name: sorted[0][0],
+      share: Math.round((sorted[0][1] / total) * 100),
+    };
+  })();
+
   const totalDives = diveType.reduce((a, t) => a + t.value, 0);
   const peakHourEntry = hourlyActivity.reduce((a, b) =>
     b.dives > a.dives ? b : a,
@@ -137,30 +179,36 @@ export function DiveActivityAnalytics() {
     <div className="space-y-6">
       <Reveal>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-          <StatCard
-            icon={Waves}
-            label="Total Dives"
-            value="2,082"
-            delta="+14%"
-          />
-          <StatCard
-            icon={BarChart3}
-            label="Most Popular Type"
-            value="Reef"
-            delta="62%"
-          />
-          <StatCard
-            icon={Clock}
-            label="Peak Hour"
-            value="10:00"
-            delta="82 dives"
-          />
-          <StatCard
-            icon={TrendingUp}
-            label="Avg Depth Range"
-            value="10–20m"
-            delta="680 dives"
-          />
+            <StatCard
+              icon={Waves}
+              label="Total Dives"
+              value={isLiveData ? totalDivers.toLocaleString() : "2,082"}
+              delta={
+                isLiveData
+                  ? `${diversDiff >= 0 ? "+" : ""}${diversDiff}`
+                  : "+14%"
+              }
+              up={isLiveData ? diversDiff >= 0 : true}
+            />
+            <StatCard
+              icon={BarChart3}
+              label="Most Popular Type"
+              value={isLiveData && topType ? topType.name : "Reef"}
+              delta={isLiveData && topType ? `${topType.share}%` : "62%"}
+            />
+            {/* No hour/depth columns exist — stays mock until dive logging adds them. */}
+            <StatCard
+              icon={Clock}
+              label="Peak Hour"
+              value="10:00"
+              delta="82 dives"
+            />
+            <StatCard
+              icon={TrendingUp}
+              label="Avg Depth Range"
+              value="10–20m"
+              delta="680 dives"
+            />
         </div>
       </Reveal>
 

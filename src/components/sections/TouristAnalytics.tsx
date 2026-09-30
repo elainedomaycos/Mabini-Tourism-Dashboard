@@ -18,6 +18,12 @@ import {
   DrilldownDialog,
 } from "@/components/shared";
 import {
+  useLiveMode,
+  useTouristsLive,
+  useManifestsLive,
+  bucketByMonth,
+} from "@/lib/queries";
+import {
   ResponsiveContainer,
   PieChart,
   Pie,
@@ -221,6 +227,91 @@ export function TouristAnalytics() {
     };
   }, [filteredNationality, filteredNatByLevel]);
 
+  // Live KPIs (React Query cache — no extra fetch). Charts below stay mock;
+  // only the four cards go live here. Deltas are real month-over-month new
+  // counts. Avg Dives is the global divers-per-tourist average (manifest
+  // divers carry no nationality, so it ignores marketFilter by necessity).
+  const isLive = useLiveMode();
+  const liveTourists = useTouristsLive();
+  const liveManifests = useManifestsLive();
+  const liveRows = liveTourists.data;
+  const isLiveData = isLive && !!liveRows;
+  const inMarket = (nat: string | null | undefined) =>
+    marketFilter === "all"
+      ? true
+      : marketFilter === "domestic"
+        ? nat != null && DOMESTIC_NATIONALITIES.has(nat)
+        : nat == null || !DOMESTIC_NATIONALITIES.has(nat);
+  const liveFiltered = useMemo(
+    () => (liveRows ?? []).filter((t) => inMarket(t.nationality)),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [liveRows, marketFilter]
+  );
+  const liveTotalDivers = liveManifests.data
+    ? liveManifests.data.reduce((a, m) => a + (m.divers || 0), 0)
+    : 0;
+  const liveBuckets = useMemo(
+    () =>
+      bucketByMonth(liveFiltered, (t: any) => t.createdAt ?? t.registered ?? ""),
+    [liveFiltered]
+  );
+  const curMonth = new Date().getMonth();
+  const prevMonth = (curMonth + 11) % 12;
+  const mom = (cur: number, prev: number) => ({
+    label: `${cur - prev >= 0 ? "+" : ""}${cur - prev}`,
+    up: cur - prev >= 0,
+  });
+  const liveCards = useMemo(() => {
+    if (!isLiveData || !liveRows) return null;
+    const levelCounts = new Map<string, number>();
+    const natSet = new Set<string>();
+    const firstSeen = new Map<string, number>();
+    for (const t of liveFiltered) {
+      if (t.level) levelCounts.set(t.level, (levelCounts.get(t.level) || 0) + 1);
+      if (t.nationality) {
+        natSet.add(t.nationality);
+        const d = (t as any).createdAt ?? (t as any).registered ?? "";
+        const m = d && d !== "—" ? new Date(d.length <= 10 ? d + "T00:00:00" : d).getMonth() : -1;
+        if (m >= 0 && (!firstSeen.has(t.nationality) || m < firstSeen.get(t.nationality)!)) {
+          firstSeen.set(t.nationality, m);
+        }
+      }
+    }
+    const mostCommon =
+      [...levelCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ??
+      "—";
+    const newNats = [...firstSeen.values()].filter((m) => m === curMonth).length;
+    const newTotal = mom(
+      liveBuckets[curMonth]?.count ?? 0,
+      liveBuckets[prevMonth]?.count ?? 0
+    );
+    const avg =
+      liveRows.length > 0 && liveManifests.data
+        ? Math.round(liveTotalDivers / liveRows.length)
+        : 0;
+    const diversBuckets = liveManifests.data
+      ? bucketByMonth(
+          liveManifests.data,
+          (m) => m.date,
+          (m) => m.divers || 0
+        )
+      : [];
+    const avgDelta = mom(
+      diversBuckets[curMonth]?.total ?? 0,
+      diversBuckets[prevMonth]?.total ?? 0
+    );
+    return { mostCommon, newNats, newTotal, avg, avgDelta };
+  }, [
+    isLiveData,
+    liveRows,
+    liveFiltered,
+    liveBuckets,
+    liveTotalDivers,
+    liveManifests.data,
+    curMonth,
+    prevMonth,
+  ]);
+
   const selectedNat = natDrilldown
     ? nationalityByLevel.find((n) => n.nationality === natDrilldown)
     : null;
@@ -244,25 +335,41 @@ export function TouristAnalytics() {
             <StatCard
               icon={Users}
               label="Total Tourists"
-              value={String(stats.total)}
-              delta="+47"
+              value={
+                liveCards ? String(liveFiltered.length) : String(stats.total)
+              }
+              delta={liveCards ? liveCards.newTotal.label : "+47"}
+              up={liveCards ? liveCards.newTotal.up : true}
             />
             <StatCard
               icon={Globe}
               label="Nationalities Represented"
-              value={String(stats.nationalities)}
-              delta="+2"
+              value={
+                liveCards
+                  ? String(
+                      new Set(
+                        liveFiltered
+                          .map((t) => t.nationality)
+                          .filter((n): n is string => !!n)
+                      ).size
+                    )
+                  : String(stats.nationalities)
+              }
+              delta={liveCards ? `+${liveCards.newNats}` : "+2"}
             />
             <StatCard
               icon={TrendingUp}
               label="Avg Dives / Tourist"
-              value={String(stats.avgDives)}
-              delta="+3"
+              value={
+                liveCards ? String(liveCards.avg) : String(stats.avgDives)
+              }
+              delta={liveCards ? liveCards.avgDelta.label : "+3"}
+              up={liveCards ? liveCards.avgDelta.up : true}
             />
             <StatCard
               icon={Award}
               label="Most Common Level"
-              value={stats.mostCommon}
+              value={liveCards ? liveCards.mostCommon : stats.mostCommon}
               delta=""
             />
           </div>

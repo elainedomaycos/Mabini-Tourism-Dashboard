@@ -154,6 +154,33 @@ import { Toaster } from "@/components/ui/sonner";
 import { Pagination, usePagination } from "@/components/ui/pagination";
 import type { DiveSiteHeatmap as DiveSiteHeatmapType } from "@/components/DiveSiteHeatmap";
 import { RejectReasonDialog } from "@/components/RejectReasonDialog";
+import {
+  signInStaff,
+  signOutStaff,
+  useStaffSession,
+  type StaffSession,
+} from "@/lib/staff-auth";
+import {
+  useLiveMode,
+  useLiveRealtime,
+  useOperatorApplicationsLive,
+  useReceiptsLive,
+  useTouristsLive,
+  useManifestsLive,
+  useInventoryLive,
+  decideApplication,
+  decideReceipt,
+  setTouristStatus,
+  renewTourist,
+  setManifestVerified,
+  fetchManifestDivers,
+  getReceiptUrl,
+  useInvalidateLive,
+  bucketByMonth,
+  bucketByDay,
+  bucketByWeek,
+  type MonthBucket,
+} from "@/lib/queries";
 import { ReceiptLightbox } from "@/components/ReceiptLightbox";
 import { ActionRequiredStrip } from "@/components/sections/ActionRequiredStrip";
 import { DivePassOverview } from "@/components/sections/DivePassOverview";
@@ -1438,13 +1465,19 @@ const CHART_COLORS = [
 type AuditEntry = { date: string; t: string; who: string; action: string };
 
 const liveAuditLogs: AuditEntry[] = [...auditLogs];
+// Local-only audit trail (in-memory, lost on reload — no audit_logs table in
+// 030 scope). Attributed to the signed-in staffer via setAuditWho().
+let currentAuditWho = "staff@local";
+export function setAuditWho(email: string) {
+  currentAuditWho = email;
+}
 const auditLogListeners = new Set<() => void>();
 function pushAuditLog(action: string) {
   const now = new Date();
   liveAuditLogs.unshift({
     date: now.toISOString().slice(0, 10),
     t: now.toTimeString().slice(0, 5),
-    who: "admin@reef.gov",
+    who: currentAuditWho,
     action,
   });
   auditLogListeners.forEach((fn) => fn());
@@ -1496,6 +1529,24 @@ const ALL_NATIONALITIES = [
   ...new Set(tourists.map((t) => t.nationality)),
 ].sort();
 const ALL_LEVELS = [...new Set(tourists.map((t) => t.level))].sort();
+
+// Display-only flag emoji, derived client-side from nationality — never
+// stored in the DB (live tourist rows carry no flag field).
+const NATIONALITY_FLAGS: Record<string, string> = {
+  USA: "🇺🇸",
+  Japan: "🇯🇵",
+  Germany: "🇩🇪",
+  Sweden: "🇸🇪",
+  Brazil: "🇧🇷",
+  Mexico: "🇲🇽",
+  UK: "🇬🇧",
+  Italy: "🇮🇹",
+  UAE: "🇦🇪",
+};
+function flagFor(nationality: string | null | undefined): string {
+  if (!nationality) return "🏳️";
+  return NATIONALITY_FLAGS[nationality] ?? "🏳️";
+}
 const ALL_SITES = [...new Set(manifestos.map((m) => m.site))].sort();
 const ALL_OPERATOR_NAMES = [...new Set(receipts.map((r) => r.operator))].sort();
 const ALL_OPERATOR_BIZ = [...new Set(operatorApps.map((a) => a.name))].sort();
@@ -1574,7 +1625,9 @@ const MONTHS = [
 function useGlobalDateRange() {
   const { search, setFilters } = useFilters();
   const range = search.globalDateRange;
-  const curMonthIdx = 6;
+  // Anchor to the real calendar month — a hardcoded month silently hides
+  // rows registered in any other month under the default 30d range.
+  const curMonthIdx = new Date().getMonth();
 
   let fromMonthIdx: number;
   let toMonthIdx: number;
@@ -1630,7 +1683,10 @@ function useGlobalDateRange() {
 }
 
 /* ------------------------------ PLATFORM FEATURES ------------------------------ */
-type Role = "superadmin" | "reviewer" | "readonly";
+// Single-role system: every staff session is a superadmin (DB has no roles).
+// The old localStorage role switcher was removed — permissions come from
+// the staff login gate, not a client-side toggle.
+type Role = "superadmin";
 const ROLE_META: Record<
   Role,
   { label: string; desc: string; className: string; icon: any }
@@ -1641,58 +1697,18 @@ const ROLE_META: Record<
     className: "bg-primary/15 text-primary border-primary/30",
     icon: ShieldCheck,
   },
-  reviewer: {
-    label: "Reviewer",
-    desc: "Review & approve receipts, applications, manifestos",
-    className: "bg-warning/15 text-warning border-warning/30",
-    icon: UserCog,
-  },
-  readonly: {
-    label: "Read-only",
-    desc: "View data — no changes allowed",
-    className: "bg-muted text-muted-foreground border-border",
-    icon: Lock,
-  },
 };
-const RoleContext = createContext<{
-  role: Role;
-  setRole: (r: Role) => void;
-  canAct: boolean;
-  canAdmin: boolean;
-}>({ role: "superadmin", setRole: () => {}, canAct: true, canAdmin: true });
-
-function RoleProvider({ children }: { children: ReactNode }) {
-  const [role, setRoleState] = useState<Role>("superadmin");
-  useEffect(() => {
-    const saved = localStorage.getItem("dive-dashboard-role") as Role | null;
-    if (saved && ROLE_META[saved]) setRoleState(saved);
-  }, []);
-  const setRole = useCallback((r: Role) => {
-    setRoleState(r);
-    localStorage.setItem("dive-dashboard-role", r);
-    toast.success(`Switched to ${ROLE_META[r].label} view`, {
-      description: ROLE_META[r].desc,
-    });
-  }, []);
-  const value = useMemo(
-    () => ({
-      role,
-      setRole,
-      canAct: role !== "readonly",
-      canAdmin: role === "superadmin",
-    }),
-    [role, setRole],
-  );
-  return <RoleContext.Provider value={value}>{children}</RoleContext.Provider>;
-}
 function useRole() {
-  return useContext(RoleContext);
+  return useMemo(
+    () => ({ role: "superadmin" as Role, canAct: true, canAdmin: true }),
+    []
+  );
 }
 function usePermission() {
   const { canAct, canAdmin } = useRole();
   const deny = useCallback(
     (
-      msg = "Read-only view — this action is locked. Switch to Super Admin or Reviewer to make changes.",
+      msg = "Read-only view — this action is locked.",
     ) => {
       toast.error("Action locked", { description: msg });
     },
@@ -1737,6 +1753,8 @@ const NOTIF_ICONS: Record<NotifKind, any> = {
   announcement: Megaphone,
 };
 
+// Local-only notification center (in-memory, lost on reload — no
+// notifications table in 030 scope; operators are notified out-of-band).
 const notifStore: { list: Notif[] } = {
   list: [
     ...receipts
@@ -1830,146 +1848,9 @@ function ClientOnlyDiveSiteHeatmap({
   );
 }
 
-const SESSION_COUNTDOWN_S = 20;
-const DEFAULT_SESSION_IDLE_MS = 600 * 1000;
-function SessionGuard({ onExpire }: { onExpire: () => void }) {
-  const [warn, setWarn] = useState(false);
-  const [countdown, setCountdown] = useState(SESSION_COUNTDOWN_S);
-  const lastActivity = useRef(Date.now());
-  const warnRef = useRef(false);
-  warnRef.current = warn;
-  const [idleMs, setIdleMs] = useState<number | null>(() => {
-    if (typeof window === "undefined") return DEFAULT_SESSION_IDLE_MS;
-    try {
-      const raw = localStorage.getItem("session-timeout");
-      if (raw === null) return DEFAULT_SESSION_IDLE_MS;
-      const sec = Number(raw);
-      if (sec === 0) return null;
-      if (Number.isNaN(sec) || sec < 0) return DEFAULT_SESSION_IDLE_MS;
-      return sec * 1000;
-    } catch {
-      return DEFAULT_SESSION_IDLE_MS;
-    }
-  });
-  const idleMsRef = useRef<number | null>(idleMs);
-  useEffect(() => {
-    idleMsRef.current = idleMs;
-  }, [idleMs]);
-
-  useEffect(() => {
-    const bump = () => {
-      lastActivity.current = Date.now();
-      if (warnRef.current) setWarn(false);
-    };
-    const events = ["pointerdown", "keydown", "touchstart", "scroll"] as const;
-    events.forEach((e) => window.addEventListener(e, bump, { passive: true }));
-    return () => events.forEach((e) => window.removeEventListener(e, bump));
-  }, []);
-
-  useEffect(() => {
-    const sync = () => {
-      try {
-        const raw = localStorage.getItem("session-timeout");
-        if (raw === null) setIdleMs(DEFAULT_SESSION_IDLE_MS);
-        else {
-          const sec = Number(raw);
-          if (sec === 0) setIdleMs(null);
-          else if (!Number.isNaN(sec) && sec > 0) setIdleMs(sec * 1000);
-        }
-      } catch {}
-    };
-    const onStorage = (e: StorageEvent) => {
-      if (e.key === "session-timeout") sync();
-    };
-    window.addEventListener("storage", onStorage);
-    window.addEventListener("session-timeout-change", sync as EventListener);
-    return () => {
-      window.removeEventListener("storage", onStorage);
-      window.removeEventListener("session-timeout-change", sync as EventListener);
-    };
-  }, []);
-
-  useEffect(() => {
-    if (idleMs === null) {
-      setWarn(false);
-      return;
-    }
-    setWarn(false);
-    const id = window.setInterval(() => {
-      const cur = idleMsRef.current;
-      if (cur === null) return;
-      if (Date.now() - lastActivity.current >= cur && !warnRef.current) {
-        setWarn(true);
-        setCountdown(SESSION_COUNTDOWN_S);
-      }
-    }, 1000);
-    return () => window.clearInterval(id);
-  }, [idleMs]);
-
-  useEffect(() => {
-    if (!warn) return;
-    const id = window.setInterval(() => {
-      setCountdown((c) => {
-        if (c <= 1) {
-          window.clearInterval(id);
-          onExpire();
-          return 0;
-        }
-        return c - 1;
-      });
-    }, 1000);
-    return () => window.clearInterval(id);
-  }, [warn, onExpire]);
-
-  const stay = () => {
-    lastActivity.current = Date.now();
-    setWarn(false);
-  };
-
-  return (
-    <Dialog
-      open={warn}
-      onOpenChange={(o) => {
-        if (!o) stay();
-      }}
-    >
-      <DialogContent className="max-w-md text-center">
-        <div className="mx-auto size-14 rounded-2xl bg-warning/15 text-warning flex items-center justify-center">
-          <AlertTriangle className="size-7" />
-        </div>
-        <DialogHeader>
-          <DialogTitle className="text-xl text-center">
-            Session about to expire
-          </DialogTitle>
-          <p className="text-sm text-muted-foreground">
-            You've been idle for a while. For security, you'll be signed out in{" "}
-            <span className="font-semibold text-foreground">{countdown}s</span>{" "}
-            unless you keep working.
-          </p>
-        </DialogHeader>
-        <div className="mt-2 h-1.5 w-full rounded-full bg-secondary overflow-hidden">
-          <motion.div
-            className="h-full bg-warning rounded-full"
-            initial={{ width: "100%" }}
-            animate={{ width: `${(countdown / SESSION_COUNTDOWN_S) * 100}%` }}
-            transition={{ duration: 1, ease: "linear" }}
-          />
-        </div>
-        <DialogFooter className="mt-2 sm:justify-center">
-          <Button variant="outline" onClick={onExpire} className="mr-2">
-            Sign out
-          </Button>
-          <Button
-            onClick={stay}
-            className="gradient-primary text-primary-foreground"
-          >
-            <CheckCircle2 className="size-4 mr-1.5" /> Stay signed in
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
+// Sessions use Supabase default persistence (refresh-token rotation) —
+// no mock idle-timeout guard. Expiry is owned by Supabase Auth; a dead
+// session simply fails the next staff check and returns to login.
 
 function useCountUp(target: number, duration = 900) {
   const ref = useRef<HTMLSpanElement>(null);
@@ -2058,23 +1939,55 @@ function Reveal({
 
 /* ------------------------------ APP ROOT ------------------------------ */
 function App() {
-  const [authed, setAuthed] = useState(false);
+  const { session, checking, setSession } = useStaffSession();
+  if (checking) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <Loader2 className="size-8 animate-spin text-primary" />
+      </div>
+    );
+  }
   return (
     <>
       <Toaster position="top-right" richColors />
-      {authed ? (
-        <Dashboard onLogout={() => setAuthed(false)} />
+      {session ? (
+        <Dashboard
+          session={session}
+          onLogout={async () => {
+            await signOutStaff();
+            setSession(null);
+          }}
+        />
       ) : (
-        <Login onLogin={() => setAuthed(true)} />
+        <Login onLogin={(s) => setSession(s)} />
       )}
     </>
   );
 }
 
 /* ------------------------------ LOGIN ------------------------------ */
-function Login({ onLogin }: { onLogin: () => void }) {
-  const [email, setEmail] = useState("admin@reef.gov");
-  const [pw, setPw] = useState("••••••••");
+function Login({ onLogin }: { onLogin: (s: StaffSession) => void }) {
+  const [email, setEmail] = useState("");
+  const [pw, setPw] = useState("");
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!email || !pw) {
+      setError("Enter your staff email and password.");
+      return;
+    }
+    setBusy(true);
+    setError("");
+    const res = await signInStaff(email.trim(), pw);
+    setBusy(false);
+    if (!res.ok) {
+      setError(res.error);
+      return;
+    }
+    onLogin(res.session);
+  };
   return (
     <div className="min-h-screen grid lg:grid-cols-2 bg-background">
       {/* Left hero */}
@@ -2127,13 +2040,7 @@ function Login({ onLogin }: { onLogin: () => void }) {
 
       {/* Right form */}
       <div className="flex items-center justify-center p-8">
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            onLogin();
-          }}
-          className="w-full max-w-sm space-y-6"
-        >
+        <form onSubmit={submit} className="w-full max-w-sm space-y-6">
           <div className="lg:hidden flex items-center gap-2 font-display font-bold text-xl text-foreground">
             <div className="size-9 rounded-xl gradient-primary flex items-center justify-center text-primary-foreground">
               <Waves className="size-5" />
@@ -2189,10 +2096,18 @@ function Login({ onLogin }: { onLogin: () => void }) {
           </div>
           <Button
             type="submit"
+            disabled={busy}
             className="w-full h-11 gradient-primary text-primary-foreground shadow-glow hover:opacity-95"
           >
-            Sign in <ChevronRight className="size-4 ml-1" />
+            {busy ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <>Sign in <ChevronRight className="size-4 ml-1" /></>
+            )}
           </Button>
+          {error && (
+            <p className="text-xs text-center text-destructive">{error}</p>
+          )}
           <p className="text-xs text-center text-muted-foreground">
             Protected by <ShieldCheck className="inline size-3.5 -mt-0.5" />{" "}
             Mabini, Batangas security
@@ -2225,15 +2140,35 @@ const NAV: { key: Section; label: string; icon: any; group: string }[] = [
   { key: "settings", label: "Settings", icon: Settings, group: "System" },
 ];
 
-function Dashboard({ onLogout }: { onLogout: () => void }) {
-  return (
-    <RoleProvider>
-      <DashboardShell onLogout={onLogout} />
-    </RoleProvider>
-  );
+function Dashboard({
+  session,
+  onLogout,
+}: {
+  session: StaffSession;
+  onLogout: () => void;
+}) {
+  useEffect(() => {
+    setAuditWho(session.email);
+  }, [session.email]);
+  // Realtime queue refresh — mounted once per staff session, behind the gate.
+  useLiveRealtime();
+  return <DashboardShell session={session} onLogout={onLogout} />;
 }
 
-function DashboardShell({ onLogout }: { onLogout: () => void }) {
+function staffInitials(fullName: string): string {
+  const parts = fullName.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return "TO";
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+}
+
+function DashboardShell({
+  session,
+  onLogout,
+}: {
+  session: StaffSession;
+  onLogout: () => void;
+}) {
   const { search, setFilters } = useFilters();
   const [searchOpen, setSearchOpen] = useState(false);
   const { role } = useRole();
@@ -2347,13 +2282,15 @@ function DashboardShell({ onLogout }: { onLogout: () => void }) {
             <div className="flex items-center gap-3 px-2 py-2">
               <Avatar className="size-9">
                 <AvatarFallback className="bg-primary text-primary-foreground text-xs">
-                  AK
+                  {staffInitials(session.fullName)}
                 </AvatarFallback>
               </Avatar>
               <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium truncate">Admin Kalua</div>
-                <div className="text-xs text-muted-foreground truncate">
-                  admin@reef.gov
+                <div className="text-sm font-medium truncate" title={session.fullName}>
+                  {session.fullName}
+                </div>
+                <div className="text-xs text-muted-foreground truncate" title={session.email}>
+                  {session.email}
                 </div>
               </div>
               <Button
@@ -2478,10 +2415,11 @@ function DashboardShell({ onLogout }: { onLogout: () => void }) {
                 )}
               </Button>
               <NotificationsBell />
+              <LiveBadge />
               <RoleBadge />
-              <Avatar className="size-9">
+              <Avatar className="size-9" title={`${session.fullName} (${session.email})`}>
                 <AvatarFallback className="bg-primary text-primary-foreground text-xs">
-                  AK
+                  {staffInitials(session.fullName)}
                 </AvatarFallback>
               </Avatar>
             </div>
@@ -2489,8 +2427,8 @@ function DashboardShell({ onLogout }: { onLogout: () => void }) {
 
           <main className="p-6 space-y-6">
             <PageTransition section={section}>
-              {section === "overview" && <Overview />}
-              {section === "tourists" && <TouristMgmt />}
+              {section === "overview" && <Overview session={session} />}
+              {section === "tourists" && <TouristMgmt session={session} />}
               {section === "establishments" && <EstablishmentsPage />}
               {section === "dive-ops" && <DiveOpsPage />}
               {section === "dive-pass" && <DivePassPage />}
@@ -2589,53 +2527,72 @@ function DashboardShell({ onLogout }: { onLogout: () => void }) {
           </CommandGroup>
         </CommandList>
       </CommandDialog>
-
-      <SessionGuard onExpire={onLogout} />
     </div>
   );
 }
 
 function RoleBadge({ compact = false }: { compact?: boolean }) {
-  const { role, setRole } = useRole();
+  const { role } = useRole();
   const meta = ROLE_META[role];
   const Icon = meta.icon;
   return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          title={`Current view: ${meta.label}. Click to switch.`}
-          className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors hover:opacity-85 ${meta.className}`}
-        >
-          <Icon className="size-3.5" />
-          {!compact && <span className="hidden md:inline">{meta.label}</span>}
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-64">
-        <DropdownMenuLabel>Role-based view</DropdownMenuLabel>
-        <DropdownMenuSeparator />
-        <DropdownMenuRadioGroup
-          value={role}
-          onValueChange={(v) => setRole(v as Role)}
-        >
-          {(Object.keys(ROLE_META) as Role[]).map((r) => {
-            const m = ROLE_META[r];
-            const RIcon = m.icon;
-            return (
-              <DropdownMenuRadioItem key={r} value={r} className="py-2">
-                <RIcon className="size-4 mr-2 text-muted-foreground" />
-                <span className="flex-1">
-                  <span className="block text-sm font-medium">{m.label}</span>
-                  <span className="block text-[11px] text-muted-foreground">
-                    {m.desc}
-                  </span>
-                </span>
-              </DropdownMenuRadioItem>
-            );
-          })}
-        </DropdownMenuRadioGroup>
-      </DropdownMenuContent>
-    </DropdownMenu>
+    <span
+      title={`Signed in as ${meta.label}`}
+      className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium ${meta.className}`}
+    >
+      <Icon className="size-3.5" />
+      {!compact && <span className="hidden md:inline">{meta.label}</span>}
+    </span>
   );
+}
+
+function DataSourceBadge({
+  live,
+  isError = false,
+  isLoading = false,
+}: {
+  live: boolean;
+  isError?: boolean;
+  isLoading?: boolean;
+}) {
+  if (!live) {
+    return (
+      <span
+        title="Supabase is not configured — showing built-in demo data"
+        className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-700 dark:text-amber-400"
+      >
+        <span className="size-1.5 rounded-full bg-amber-500" />
+        Demo data
+      </span>
+    );
+  }
+  if (isError) {
+    return (
+      <span
+        title="Live query failed — showing demo fallback. Check the Supabase connection."
+        className="inline-flex items-center gap-1.5 rounded-full border border-destructive/30 bg-destructive/10 px-2.5 py-1 text-xs font-medium text-destructive"
+      >
+        <span className="size-1.5 rounded-full bg-destructive" />
+        Live error — demo fallback
+      </span>
+    );
+  }
+  return (
+    <span
+      title="Connected to Supabase — showing live data"
+      className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-400"
+    >
+      <span
+        className={`size-1.5 rounded-full bg-emerald-500 ${isLoading ? "animate-pulse" : ""}`}
+      />
+      Live
+    </span>
+  );
+}
+
+function LiveBadge() {
+  const isLive = useLiveMode();
+  return <DataSourceBadge live={isLive} />;
 }
 
 function NotificationsBell() {
@@ -2904,7 +2861,7 @@ function ActiveFilterBadges({
 }
 
 /* ------------------------------ OVERVIEW ------------------------------ */
-function Overview() {
+function Overview({ session }: { session?: StaffSession | null }) {
   const { setFilters } = useFilters();
   const { visibleMonths, scale } = useGlobalDateRange();
   const [drillMonth, setDrillMonth] = useState<any>(null);
@@ -2913,52 +2870,190 @@ function Overview() {
   const [drillDiveType, setDrillDiveType] = useState<any>(null);
   const [drillLevel, setDrillLevel] = useState<any>(null);
 
-  const monthDetail = drillMonth
-    ? monthlyTrends.find((d) => d.m === drillMonth.m)
-    : null;
-  const filteredMonths = useMemo(
-    () => monthlyTrends.filter((d) => visibleMonths.includes(d.m)),
-    [visibleMonths],
+  // Live sources (React Query cache — mounting here costs no extra fetch).
+  // Tourist rows exclude the signed-in staffer, matching TouristMgmt.
+  const liveTouristsOv = useTouristsLive();
+  const liveAppsOv = useOperatorApplicationsLive();
+  const liveReceiptsOv = useReceiptsLive();
+  const liveManifestsOv = useManifestsLive();
+  const ovLive = !!(
+    liveTouristsOv.data &&
+    liveAppsOv.data &&
+    liveReceiptsOv.data &&
+    liveManifestsOv.data
   );
-  const scaledNationality = useMemo(
+  const ovTourists = useMemo(() => {
+    const rows = liveTouristsOv.data ?? tourists;
+    return session?.userId
+      ? rows.filter((t: any) => t._dbId !== session.userId)
+      : rows;
+  }, [liveTouristsOv.data, session?.userId]);
+  const ovApps = liveAppsOv.data ?? operatorApps;
+  const ovReceipts = liveReceiptsOv.data ?? receipts;
+  const ovManifests = liveManifestsOv.data ?? manifestos;
+
+  // Real month buckets over live rows (counts + revenue). Replaces the old
+  // `scale * 3` multiplier that faked responsiveness on mock series.
+  const touristBuckets = useMemo(
+    () => bucketByMonth(ovTourists, (t: any) => t.registered ?? t.createdAt ?? ""),
+    [ovTourists]
+  );
+  const diveBuckets = useMemo(() => {
+    const counts = bucketByMonth(
+      ovManifests,
+      (m: any) => m.date,
+      (m: any) => m.divers || 0
+    );
+    return counts;
+  }, [ovManifests]);
+  const appBuckets = useMemo(
+    () => bucketByMonth(ovApps, (a: any) => a.submitted ?? ""),
+    [ovApps]
+  );
+  const receiptBuckets = useMemo(
     () =>
-      nationality.map((n) => ({
+      bucketByMonth(
+        ovReceipts,
+        (r: any) => r.date,
+        (r: any) => r.amountNum || 0
+      ),
+    [ovReceipts]
+  );
+  const activeBuckets = useMemo(
+    () =>
+      bucketByMonth(
+        ovTourists.filter((t: any) => t.status === "Active"),
+        (t: any) => t.createdAt ?? t.registered ?? ""
+      ),
+    [ovTourists]
+  );
+  const todayISO = new Date().toISOString().slice(0, 10);
+  const yesterdayISO = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const todayDivers = useMemo(
+    () =>
+      ovManifests
+        .filter((m: any) => m.date === todayISO)
+        .reduce((a, m: any) => a + (m.divers || 0), 0),
+    [ovManifests, todayISO]
+  );
+  const yesterdayDivers = useMemo(
+    () =>
+      ovManifests
+        .filter((m: any) => m.date === yesterdayISO)
+        .reduce((a, m: any) => a + (m.divers || 0), 0),
+    [ovManifests, yesterdayISO]
+  );
+  const monthIdxNow = new Date().getMonth();
+  const monthIdxPrev = (monthIdxNow + 11) % 12;
+  const momDiff = (buckets: MonthBucket[], pick: (b: MonthBucket) => number) => {
+    const diff = pick(buckets[monthIdxNow]) - pick(buckets[monthIdxPrev]);
+    return { diff, label: `${diff >= 0 ? "+" : ""}${diff}`, up: diff >= 0 };
+  };
+
+  const trendData = useMemo(() => {
+    if (!ovLive) return monthlyTrends.filter((d) => visibleMonths.includes(d.m));
+    const all = touristBuckets.map((b, i) => ({
+      m: b.m,
+      tourists: b.count,
+      dives: diveBuckets[i]?.total ?? 0,
+    }));
+    return all.filter((d) => visibleMonths.includes(d.m));
+  }, [ovLive, touristBuckets, diveBuckets, visibleMonths]);
+  const monthDetail = drillMonth
+    ? trendData.find((d) => d.m === drillMonth.m)
+    : null;
+  const monthRevenueOf = (m: string) => {
+    const i = MONTHS.indexOf(m as (typeof MONTHS)[number]);
+    if (ovLive && i >= 0) return receiptBuckets[i]?.total ?? 0;
+    const row = trendData.find((d) => d.m === m) as any;
+    return (row?.dives ?? 0) * 120;
+  };
+
+  const shareOf = (counts: Map<string, number>, topN?: number) => {
+    const total = [...counts.values()].reduce((a, c) => a + c, 0);
+    if (total === 0) return null;
+    const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
+    const head = topN != null ? sorted.slice(0, topN) : sorted;
+    const out = head.map(([name, c]) => ({
+      name,
+      value: Math.round((c / total) * 100),
+    }));
+    if (topN != null && sorted.length > topN) {
+      const rest = sorted.slice(topN).reduce((a, [, c]) => a + c, 0);
+      out.push({ name: "Other", value: Math.round((rest / total) * 100) });
+    }
+    return out;
+  };
+  const scaledNationality = useMemo(() => {
+    if (!ovLive) {
+      return nationality.map((n) => ({
         ...n,
         value: Math.round(n.value * Math.min(scale * 3, 1)),
-      })),
-    [scale],
-  );
-  const scaledDiveLevel = useMemo(
-    () =>
-      diveLevel.map((d) => ({
+      }));
+    }
+    const counts = new Map<string, number>();
+    for (const t of ovTourists) {
+      const n = (t as any).nationality;
+      if (n) counts.set(n, (counts.get(n) || 0) + 1);
+    }
+    return shareOf(counts, 5) ?? [];
+  }, [ovLive, ovTourists, scale]);
+  const scaledDiveLevel = useMemo(() => {
+    if (!ovLive) {
+      return diveLevel.map((d) => ({
         ...d,
         value: Math.round(d.value * Math.min(scale * 3, 1)),
-      })),
-    [scale],
-  );
-  const scaledDiveType = useMemo(
-    () =>
-      diveType.map((d) => ({
+      }));
+    }
+    const counts = new Map<string, number>();
+    for (const t of ovTourists) {
+      const l = (t as any).level;
+      if (l) counts.set(l, (counts.get(l) || 0) + 1);
+    }
+    return shareOf(counts) ?? [];
+  }, [ovLive, ovTourists, scale]);
+  const scaledDiveType = useMemo(() => {
+    if (!ovLive) {
+      return diveType.map((d) => ({
         ...d,
         value: Math.round(d.value * Math.min(scale * 3, 1)),
-      })),
-    [scale],
-  );
-  const scaledTopSites = useMemo(
-    () =>
-      topSites.map((s) => ({
+      }));
+    }
+    const counts = new Map<string, number>();
+    for (const m of ovManifests) {
+      const dt = (m as any).diveType;
+      if (dt) counts.set(dt, (counts.get(dt) || 0) + 1);
+    }
+    return shareOf(counts) ?? [];
+  }, [ovLive, ovManifests, scale]);
+  const scaledTopSites = useMemo(() => {
+    if (!ovLive) {
+      return topSites.map((s) => ({
         ...s,
         value: Math.round(s.value * Math.min(scale * 3, 1)),
-      })),
-    [scale],
+      }));
+    }
+    const sums = new Map<string, number>();
+    for (const m of ovManifests) {
+      const s = (m as any).site;
+      if (s) sums.set(s, (sums.get(s) || 0) + ((m as any).divers || 0));
+    }
+    return [...sums.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 8)
+      .map(([name, value]) => ({ name, value }));
+  }, [ovLive, ovManifests, scale]);
+  const liveTotalDivers = useMemo(
+    () => ovManifests.reduce((a, m: any) => a + (m.divers || 0), 0),
+    [ovManifests]
   );
   const totalTourists = useMemo(
-    () => filteredMonths.reduce((a, m) => a + m.tourists, 0),
-    [filteredMonths],
+    () => trendData.reduce((a, m) => a + m.tourists, 0),
+    [trendData]
   );
   const totalDives = useMemo(
-    () => filteredMonths.reduce((a, m) => a + m.dives, 0),
-    [filteredMonths],
+    () => trendData.reduce((a, m) => a + m.dives, 0),
+    [trendData]
   );
   return (
     <div className="space-y-6">
@@ -2975,15 +3070,40 @@ function Overview() {
           <div className="relative flex flex-col md:flex-row md:items-center md:justify-between gap-4">
             <div>
               <div className="text-sm text-primary-foreground/80">
-                Good morning, Admin
+                {(() => {
+                  const h = new Date().getHours();
+                  const part =
+                    h < 12 ? "morning" : h < 18 ? "afternoon" : "evening";
+                  const first =
+                    session?.fullName?.trim().split(/\s+/)?.[0] ?? "Admin";
+                  return `Good ${part}, ${first}`;
+                })()}
               </div>
               <h2 className="mt-1 text-2xl md:text-3xl font-display font-bold">
-                Today's dive activity is up{" "}
-                <span className="underline decoration-white/40">+18%</span>
+                {ovLive ? (
+                  <>
+                    {todayDivers} dives on the water{" "}
+                    <span className="underline decoration-white/40">
+                      today
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    Today's dive activity is up{" "}
+                    <span className="underline decoration-white/40">+18%</span>
+                  </>
+                )}
               </h2>
               <p className="mt-1 text-primary-foreground/80 max-w-xl">
-                3 new operator applications and 5 receipts are waiting on your
-                review.
+                {(() => {
+                  const pendingApps = ovApps.filter(
+                    (a: any) => a.status === "Pending"
+                  ).length;
+                  const pendingReceipts = ovReceipts.filter(
+                    (r: any) => r.status === "Pending"
+                  ).length;
+                  return `${pendingApps} operator application${pendingApps !== 1 ? "s" : ""} and ${pendingReceipts} receipt${pendingReceipts !== 1 ? "s" : ""} are waiting on your review.`;
+                })()}
               </p>
             </div>
             <div className="flex gap-2">
@@ -3036,59 +3156,83 @@ function Overview() {
       {/* Stats */}
       <Reveal>
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-          {[
-            {
-              icon: Users,
-              label: "Tourists",
-              value: "810",
-              delta: "+47",
-            },
-            {
-              icon: UserCheck,
-              label: "Active IDs",
-              value: "358",
-              delta: "+12",
-            },
-            {
-              icon: Waves,
-              label: "Today's Dives",
-              value: "28",
-              delta: "+6",
-            },
-            {
-              icon: Building2,
-              label: "Establishments",
-              value: String(
-                operatorApps.filter((a) => a.status === "Approved").length,
-              ),
-              delta: "+3",
-            },
-            {
-              icon: MapPin,
-              label: "Active Sites",
-              value: String(
-                diveSites.filter((s) => s.status === "Active").length,
-              ),
-              delta: "+1",
-            },
-          ].map((s) => (
-            <StatCard
-              key={s.label}
-              icon={s.icon}
-              label={s.label}
-              value={s.value}
-              delta={s.delta}
-            />
-          ))}
+          {(() => {
+            const tDelta = momDiff(touristBuckets, (b) => b.count);
+            const aDelta = momDiff(activeBuckets, (b) => b.count);
+            const eDelta = momDiff(appBuckets, (b) =>
+              b.count
+            );
+            const approvedCount = ovApps.filter(
+              (a: any) => a.status === "Approved"
+            ).length;
+            const dayDiff = todayDivers - yesterdayDivers;
+            const cards = [
+              {
+                icon: Users,
+                label: "Tourists",
+                value: ovLive
+                  ? String(ovTourists.length)
+                  : "810",
+                delta: ovLive ? tDelta.label : "+47",
+                up: ovLive ? tDelta.up : true,
+              },
+              {
+                icon: UserCheck,
+                label: "Active IDs",
+                value: ovLive
+                  ? String(
+                      ovTourists.filter((t: any) => t.status === "Active")
+                        .length
+                    )
+                  : "358",
+                delta: ovLive ? aDelta.label : "+12",
+                up: ovLive ? aDelta.up : true,
+              },
+              {
+                icon: Waves,
+                label: "Today's Dives",
+                value: ovLive ? String(todayDivers) : "28",
+                delta: ovLive
+                  ? `${dayDiff >= 0 ? "+" : ""}${dayDiff}`
+                  : "+6",
+                up: ovLive ? dayDiff >= 0 : true,
+              },
+              {
+                icon: Building2,
+                label: "Establishments",
+                value: String(approvedCount),
+                delta: ovLive ? eDelta.label : "+3",
+                up: ovLive ? eDelta.up : true,
+              },
+              {
+                icon: MapPin,
+                label: "Active Sites",
+                value: String(
+                  diveSites.filter((s) => s.status === "Active").length,
+                ),
+                delta: "+1",
+              },
+            ];
+            return cards.map((s) => (
+              <StatCard
+                key={s.label}
+                icon={s.icon}
+                label={s.label}
+                value={s.value}
+                delta={s.delta}
+                up={s.up}
+              />
+            ));
+          })()}
         </div>
       </Reveal>
 
       {/* Action Required Strip */}
       <ActionRequiredStrip
-        receipts={receipts}
-        operatorApps={operatorApps}
-        manifestos={manifestos}
-        tourists={tourists}
+        receipts={ovReceipts}
+        operatorApps={ovApps}
+        manifestos={ovManifests}
+        tourists={ovTourists}
         setFilters={setFilters}
       />
 
@@ -3110,7 +3254,7 @@ function Overview() {
             <div className="h-72">
               <ResponsiveContainer>
                 <AreaChart
-                  data={filteredMonths}
+                  data={trendData}
                   margin={{ left: -12, right: 8, top: 8 }}
                   onClick={(e) =>
                     e?.activePayload?.[0]?.payload &&
@@ -3466,7 +3610,7 @@ function Overview() {
                     Estimated revenue
                   </TableCell>
                   <TableCell className="text-right font-medium">
-                    ₱{(drillMonth.dives * 120).toLocaleString()}
+                    ₱{Math.round(monthRevenueOf(drillMonth.m)).toLocaleString()}
                   </TableCell>
                 </TableRow>
               </TableBody>
@@ -3491,7 +3635,9 @@ function Overview() {
                 {
                   label: "Est. count",
                   value: Math.round(
-                    (12480 * drillNationality.value) / 100,
+                    ((ovLive ? ovTourists.length : 12480) *
+                      drillNationality.value) /
+                      100,
                   ).toLocaleString(),
                   icon: TrendingUp,
                 },
@@ -3513,28 +3659,25 @@ function Overview() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {tourists
-                  .filter(
-                    (t) =>
-                      t.nationality === drillNationality.name ||
-                      (drillNationality.name === "Other" &&
-                        ![
-                          "USA",
-                          "Germany",
-                          "Japan",
-                          "UK",
-                          "Australia",
-                        ].includes(t.nationality)),
-                  )
+                {ovTourists
+                  .filter((t: any) => {
+                    const nat = t.nationality ?? "";
+                    if (drillNationality.name === "Other") {
+                      return !scaledNationality
+                        .map((n) => n.name)
+                        .includes(nat);
+                    }
+                    return nat === drillNationality.name;
+                  })
                   .slice(0, 5)
-                  .map((t) => (
+                  .map((t: any) => (
                     <TableRow key={t.id}>
                       <TableCell className="font-medium">
-                        {t.flag} {t.name}
+                        {t.flag ?? flagFor(t.nationality)} {t.name}
                       </TableCell>
                       <TableCell>
                         <Badge variant="outline" className="text-[10px]">
-                          {t.level}
+                          {t.level ?? "—"}
                         </Badge>
                       </TableCell>
                       <TableCell>
@@ -3550,14 +3693,15 @@ function Overview() {
                       </TableCell>
                     </TableRow>
                   ))}
-                {tourists.filter(
-                  (t) =>
-                    t.nationality === drillNationality.name ||
-                    (drillNationality.name === "Other" &&
-                      !["USA", "Germany", "Japan", "UK", "Australia"].includes(
-                        t.nationality,
-                      )),
-                ).length === 0 && (
+                {ovTourists.filter((t: any) => {
+                  const nat = t.nationality ?? "";
+                  if (drillNationality.name === "Other") {
+                    return !scaledNationality
+                      .map((n) => n.name)
+                      .includes(nat);
+                  }
+                  return nat === drillNationality.name;
+                }).length === 0 && (
                   <TableRow>
                     <TableCell
                       colSpan={3}
@@ -3584,12 +3728,12 @@ function Overview() {
                 { label: "Total dives", value: drillSite.value, icon: Waves },
                 {
                   label: "Rank",
-                  value: `#${topSites.indexOf(drillSite) + 1}`,
+                  value: `#${scaledTopSites.indexOf(drillSite) + 1}`,
                   icon: TrendingUp,
                 },
                 {
                   label: "Share",
-                  value: `${((drillSite.value / topSites.reduce((a, s) => a + s.value, 0)) * 100).toFixed(1)}%`,
+                  value: `${((drillSite.value / scaledTopSites.reduce((a, s) => a + s.value, 0)) * 100).toFixed(1)}%`,
                   icon: BarChart3,
                 },
               ]
@@ -3685,7 +3829,9 @@ function Overview() {
                 {
                   label: "Est. dives",
                   value: Math.round(
-                    (2140 * drillDiveType.value) / 100,
+                    ((ovLive ? liveTotalDivers : 2140) *
+                      drillDiveType.value) /
+                      100,
                   ).toLocaleString(),
                   icon: TrendingUp,
                 },
@@ -3756,7 +3902,9 @@ function Overview() {
                 {
                   label: "Est. divers",
                   value: Math.round(
-                    (12480 * drillLevel.value) / 100,
+                    ((ovLive ? ovTourists.length : 12480) *
+                      drillLevel.value) /
+                      100,
                   ).toLocaleString(),
                   icon: Users,
                 },
@@ -3778,13 +3926,14 @@ function Overview() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {tourists
-                  .filter((t) => t.level === drillLevel.name)
-                  .map((t) => (
+                {ovTourists
+                  .filter((t: any) => (t.level ?? "") === drillLevel.name)
+                  .map((t: any) => (
                     <TableRow key={t.id}>
                       <TableCell className="font-medium">{t.name}</TableCell>
                       <TableCell>
-                        {t.flag} {t.nationality}
+                        {t.flag ?? flagFor(t.nationality)}{" "}
+                        {t.nationality ?? "—"}
                       </TableCell>
                       <TableCell>
                         {t.status === "Active" ? (
@@ -3807,12 +3956,39 @@ function Overview() {
     </div>
   );
 }
-function TouristMgmt() {
+function TouristMgmt({ session }: { session?: StaffSession | null }) {
   const { search, setFilters, resetFilters } = useFilters();
   const { visibleMonths } = useGlobalDateRange();
   const { canAct, deny } = usePermission();
-  const [touristList, setTouristList] = useState(tourists);
+  const [mockTourists, setMockTourists] = useState(tourists);
+  // Live mode (Supabase configured): the registry comes from tourists;
+  // mocks are the offline fallback. Register stays mock-only (creating
+  // auth.users rows needs a server function — impossible client-side).
+  const isLive = useLiveMode();
+  const liveTourists = useTouristsLive();
+  const invalidateTourists = useInvalidateLive();
+  const isLiveData = isLive && !!liveTourists.data;
+  const touristList = liveTourists.data ?? mockTourists;
+  // Hide the signed-in staffer's own tourists row: Sinsay auto-creates a
+  // tourists profile for every auth user, including staff logins. Server-side
+  // exclusion can't do better (to_staff RLS is own-row-only), so filter the
+  // session UID client-side. Mock rows carry no _dbId — demo mode untouched.
+  const visibleTourists = useMemo(
+    () =>
+      session?.userId
+        ? touristList.filter((t) => (t as any)._dbId !== session.userId)
+        : touristList,
+    [touristList, session?.userId]
+  );
+  useEffect(() => {
+    if (liveTourists.isError) {
+      toast.error("Could not load live tourists", {
+        description: "Showing demo data. Check the Supabase connection.",
+      });
+    }
+  }, [liveTourists.isError]);
   const [viewing, setViewing] = useState<any>(null);
+  const [rowBusy, setRowBusy] = useState<"suspend" | "renew" | null>(null);
   const [touristDrilldown, setTouristDrilldown] = useState<any>(null);
   const [registerOpen, setRegisterOpen] = useState(false);
   const [regForm, setRegForm] = useState({
@@ -4591,15 +4767,19 @@ function TouristMgmt() {
 
   const filtered = useMemo(() => {
     const monthSet = new Set(visibleMonths);
-    return touristList.filter((t) => {
+    return visibleTourists.filter((t) => {
       if (search.status !== "All" && t.status !== search.status) return false;
       if (search.nationality !== "All" && t.nationality !== search.nationality)
         return false;
       if (search.level !== "All" && t.level !== search.level) return false;
       if (monthSet.size < 12) {
         const d = new Date(t.registered + "T00:00:00");
-        const key = d.toLocaleString("en", { month: "short" });
-        if (!monthSet.has(key)) return false;
+        // Unknown registration date → show the row, don't hide it. Accounts
+        // with limited info must stay visible under any range filter.
+        if (!Number.isNaN(d.getTime())) {
+          const key = d.toLocaleString("en", { month: "short" });
+          if (!monthSet.has(key)) return false;
+        }
       }
       if (search.q) {
         const q = search.q.toLowerCase();
@@ -4612,12 +4792,41 @@ function TouristMgmt() {
       return true;
     });
   }, [
+    visibleTourists,
     search.q,
     search.status,
     search.nationality,
     search.level,
     visibleMonths,
   ]);
+
+  // Filter options follow the visible rows: live distinct values when live,
+  // mock constants otherwise (certification_level values are data-driven).
+  // Derived from visibleTourists so the hidden staff row can't pollute them.
+  const nationalityOptions = useMemo(
+    () =>
+      isLiveData
+        ? [
+            ...new Set(
+              visibleTourists
+                .map((t) => t.nationality)
+                .filter((n): n is string => !!n)
+            ),
+          ].sort()
+        : ALL_NATIONALITIES,
+    [isLiveData, visibleTourists]
+  );
+  const levelOptions = useMemo(
+    () =>
+      isLiveData
+        ? [
+            ...new Set(
+              visibleTourists.map((t) => t.level).filter((l): l is string => !!l)
+            ),
+          ].sort()
+        : ALL_LEVELS,
+    [isLiveData, visibleTourists]
+  );
 
   const {
     page: tPage,
@@ -4646,10 +4855,113 @@ function TouristMgmt() {
     else if (key === "level") setFilters({ level: "All" });
   };
 
+  const suspendViewing = async () => {
+    if (!viewing) return;
+    if (!canAct) return deny();
+    if (!!session?.userId && (viewing as any)._dbId === session.userId) {
+      toast.error("Action not allowed", {
+        description: "This is your own staff account.",
+      });
+      return;
+    }
+    const dbId = (viewing as any)._dbId as string | undefined;
+    const toSuspended = viewing.status !== "Suspended";
+    const nextStatus = toSuspended ? "Suspended" : "Active";
+    // Live mode: persist to tourists (031 status + staff UPDATE).
+    if (isLive && dbId) {
+      setRowBusy("suspend");
+      try {
+        await setTouristStatus(dbId, toSuspended ? "suspended" : "active");
+        invalidateTourists();
+        setViewing({ ...viewing, status: nextStatus });
+        pushAuditLog(
+          `${toSuspended ? "Suspended" : "Reactivated"} tourist ${viewing.id}`
+        );
+        toast.success(
+          toSuspended ? "Tourist suspended" : "Tourist reactivated",
+          { description: `${viewing.name} (${viewing.id})` }
+        );
+      } catch (e) {
+        toast.error("Could not update tourist", {
+          description: e instanceof Error ? e.message : "Please try again.",
+        });
+      } finally {
+        setRowBusy(null);
+      }
+      return;
+    }
+    setMockTourists((prev) =>
+      prev.map((t) =>
+        t.id === viewing.id ? { ...t, status: nextStatus } : t
+      )
+    );
+    setViewing({ ...viewing, status: nextStatus });
+    pushAuditLog(
+      `${toSuspended ? "Suspended" : "Reactivated"} tourist ${viewing.id}`
+    );
+    toast.success(toSuspended ? "Tourist suspended" : "Tourist reactivated", {
+      description: `${viewing.name} (${viewing.id})`,
+    });
+  };
+
+  const renewViewing = async () => {
+    if (!viewing) return;
+    if (!canAct) return deny();
+    if (!!session?.userId && (viewing as any)._dbId === session.userId) {
+      toast.error("Action not allowed", {
+        description: "This is your own staff account.",
+      });
+      return;
+    }
+    const dbId = (viewing as any)._dbId as string | undefined;
+    // Live mode: extend renewal_date by one year from today.
+    if (isLive && dbId) {
+      setRowBusy("renew");
+      try {
+        const renewalDate = await renewTourist(dbId);
+        invalidateTourists();
+        setViewing({ ...viewing, expires: renewalDate, status: "Active" });
+        pushAuditLog(`Renewed tourist ${viewing.id} — extends to ${renewalDate}`);
+        toast.success("Tourist ID renewed", {
+          description: `${viewing.name} (${viewing.id}) — valid to ${renewalDate}`,
+        });
+      } catch (e) {
+        toast.error("Could not renew tourist", {
+          description: e instanceof Error ? e.message : "Please try again.",
+        });
+      } finally {
+        setRowBusy(null);
+      }
+      return;
+    }
+    const next = new Date();
+    next.setFullYear(next.getFullYear() + 1);
+    const renewalDate = next.toISOString().slice(0, 10);
+    setMockTourists((prev) =>
+      prev.map((t) =>
+        t.id === viewing.id
+          ? { ...t, expires: renewalDate, status: "Active" }
+          : t
+      )
+    );
+    setViewing({ ...viewing, expires: renewalDate, status: "Active" });
+    pushAuditLog(`Renewed tourist ${viewing.id} — extends to ${renewalDate}`);
+    toast.success("Tourist ID renewed", {
+      description: `${viewing.name} (${viewing.id}) — valid to ${renewalDate}`,
+    });
+  };
+
   return (
     <div className="space-y-4">
       {/* Search & Filters */}
       <div className="flex flex-col gap-3">
+        <div className="flex items-center gap-2">
+          <DataSourceBadge
+            live={isLiveData}
+            isError={liveTourists.isError}
+            isLoading={liveTourists.isFetching}
+          />
+        </div>
         <div className="flex flex-col md:flex-row gap-3 md:items-center">
           <div className="relative flex-1 max-w-md">
             <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -4684,7 +4996,7 @@ function TouristMgmt() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="All">All nationalities</SelectItem>
-              {ALL_NATIONALITIES.map((n) => (
+              {nationalityOptions.map((n) => (
                 <SelectItem key={n} value={n}>
                   {n}
                 </SelectItem>
@@ -4700,7 +5012,7 @@ function TouristMgmt() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="All">All levels</SelectItem>
-              {ALL_LEVELS.map((l) => (
+              {levelOptions.map((l) => (
                 <SelectItem key={l} value={l}>
                   {l}
                 </SelectItem>
@@ -4719,6 +5031,12 @@ function TouristMgmt() {
           )}
           <Button
             className="ml-auto gradient-primary text-primary-foreground"
+            disabled={isLiveData}
+            title={
+              isLiveData
+                ? "Registration goes live in Phase 1b — creating auth.users rows needs a server function, impossible client-side"
+                : undefined
+            }
             onClick={() => {
               if (!canAct) return deny();
               setRegisterOpen(true);
@@ -4734,8 +5052,8 @@ function TouristMgmt() {
       </div>
 
       <div className="text-xs text-muted-foreground">
-        {filtered.length} of {touristList.length} tourist
-        {touristList.length !== 1 ? "s" : ""}
+        {filtered.length} of {visibleTourists.length} tourist
+        {visibleTourists.length !== 1 ? "s" : ""}
       </div>
 
       <Card className="shadow-elegant overflow-hidden">
@@ -4774,9 +5092,10 @@ function TouristMgmt() {
                   </TableCell>
                   <TableCell className="font-medium">{t.name}</TableCell>
                   <TableCell>
-                    {t.flag} {t.nationality}
+                    {(t as any).flag ?? flagFor(t.nationality)}{" "}
+                    {t.nationality ?? "—"}
                   </TableCell>
-                  <TableCell>{t.level}</TableCell>
+                  <TableCell>{t.level ?? "—"}</TableCell>
                   <TableCell className="text-muted-foreground">
                     {t.registered}
                   </TableCell>
@@ -4840,18 +5159,53 @@ function TouristMgmt() {
               <div className="grid grid-cols-2 gap-3 text-sm">
                 <Field
                   label="Nationality"
-                  value={`${viewing.flag} ${viewing.nationality}`}
+                  value={`${viewing.flag ?? flagFor(viewing.nationality)} ${viewing.nationality ?? "—"}`}
                 />
-                <Field label="Dive Level" value={viewing.level} />
+                <Field label="Dive Level" value={viewing.level ?? "—"} />
                 <Field label="Registered" value={viewing.registered} />
                 <Field label="ID Expires" value={viewing.expires} />
                 <Field label="Total Dives" value="47" />
               </div>
               <div className="flex gap-2 pt-2">
-                <Button variant="outline" className="flex-1">
-                  Suspend
+                <Button
+                  variant="outline"
+                  className="flex-1"
+                  disabled={
+                    rowBusy !== null ||
+                    (!!session?.userId &&
+                      (viewing as any)._dbId === session.userId)
+                  }
+                  title={
+                    !!session?.userId &&
+                    (viewing as any)._dbId === session.userId
+                      ? "This is your own staff account — status writes don't apply"
+                      : undefined
+                  }
+                  onClick={suspendViewing}
+                >
+                  {rowBusy === "suspend" ? (
+                    <Loader2 className="size-4 mr-1 animate-spin" />
+                  ) : null}
+                  {viewing.status === "Suspended" ? "Reactivate" : "Suspend"}
                 </Button>
-                <Button className="flex-1 gradient-primary text-primary-foreground">
+                <Button
+                  className="flex-1 gradient-primary text-primary-foreground"
+                  disabled={
+                    rowBusy !== null ||
+                    (!!session?.userId &&
+                      (viewing as any)._dbId === session.userId)
+                  }
+                  title={
+                    !!session?.userId &&
+                    (viewing as any)._dbId === session.userId
+                      ? "This is your own staff account — renewal doesn't apply"
+                      : undefined
+                  }
+                  onClick={renewViewing}
+                >
+                  {rowBusy === "renew" ? (
+                    <Loader2 className="size-4 mr-1 animate-spin" />
+                  ) : null}
                   Renew ID
                 </Button>
               </div>
@@ -4864,7 +5218,7 @@ function TouristMgmt() {
         open={!!touristDrilldown}
         onOpenChange={(o) => !o && setTouristDrilldown(null)}
         title={`${touristDrilldown?.name ?? ""} — Dive History`}
-        subtitle={`${touristDrilldown?.flag ?? ""} ${touristDrilldown?.nationality ?? ""} · ${touristDrilldown?.level ?? ""}`}
+        subtitle={`${touristDrilldown ? ((touristDrilldown as any).flag ?? flagFor(touristDrilldown.nationality)) : ""} ${touristDrilldown?.nationality ?? ""} · ${touristDrilldown?.level ?? ""}`}
         stats={
           touristDrilldown
             ? [
@@ -4963,21 +5317,10 @@ function TouristMgmt() {
                 <Select
                   value={regForm.nationality}
                   onValueChange={(v) => {
-                    const flagMap: Record<string, string> = {
-                      USA: "🇺🇸",
-                      Japan: "🇯🇵",
-                      Germany: "🇩🇪",
-                      Sweden: "🇸🇪",
-                      Brazil: "🇧🇷",
-                      Mexico: "🇲🇽",
-                      UK: "🇬🇧",
-                      Italy: "🇮🇹",
-                      UAE: "🇦🇪",
-                    };
                     setRegForm((p) => ({
                       ...p,
                       nationality: v,
-                      flag: flagMap[v] ?? "🏳️",
+                      flag: flagFor(v),
                     }));
                   }}
                 >
@@ -5051,7 +5394,7 @@ function TouristMgmt() {
                   toast.error("Name is required");
                   return;
                 }
-                const newId = `TR-${10271 + touristList.length}`;
+                const newId = `TR-${10271 + mockTourists.length}`;
                 const today = new Date().toISOString().slice(0, 10);
                 let expires: string;
                 if (regForm.passType === "Daily") {
@@ -5073,7 +5416,7 @@ function TouristMgmt() {
                   registered: today,
                   expires,
                 };
-                setTouristList((prev) => [newTourist, ...prev]);
+                setMockTourists((prev) => [newTourist, ...prev]);
                 pushAuditLog(
                   `Registered tourist ${newId} — ${regForm.name.trim()} (${regForm.passType} pass)`,
                 );
@@ -5104,7 +5447,21 @@ export function OperatorMgmt() {
   const { canAct, deny } = usePermission();
   const { search, setFilters } = useFilters();
   const { visibleMonths } = useGlobalDateRange();
-  const [apps, setApps] = useState(operatorApps);
+  const [mockApps, setMockApps] = useState(operatorApps);
+  // Live mode (Supabase configured): the queue comes from
+  // operator_applications; mocks are the offline fallback.
+  const isLive = useLiveMode();
+  const liveApps = useOperatorApplicationsLive();
+  const invalidateLive = useInvalidateLive();
+  const isLiveData = isLive && !!liveApps.data;
+  const apps = liveApps.data ?? mockApps;
+  useEffect(() => {
+    if (liveApps.isError) {
+      toast.error("Could not load live applications", {
+        description: "Showing demo data. Check the Supabase connection.",
+      });
+    }
+  }, [liveApps.isError]);
   const [busy, setBusy] = useState<Record<string, "approve" | "reject" | null>>(
     {},
   );
@@ -5123,8 +5480,10 @@ export function OperatorMgmt() {
       if (search.status !== "All" && o.status !== search.status) return false;
       if (monthSet.size < 12) {
         const d = new Date(o.submitted + "T00:00:00");
-        const key = d.toLocaleString("en", { month: "short" });
-        if (!monthSet.has(key)) return false;
+        if (!Number.isNaN(d.getTime())) {
+          const key = d.toLocaleString("en", { month: "short" });
+          if (!monthSet.has(key)) return false;
+        }
       }
       if (search.q) {
         const q = search.q.toLowerCase();
@@ -5165,9 +5524,47 @@ export function OperatorMgmt() {
     if (!canAct) return deny();
     const key = decision === "Approved" ? "approve" : "reject";
     setBusy((b) => ({ ...b, [id]: key }));
+    // Live mode: persist the decision to Supabase (030 staff policies).
+    // The operator's app picks it up over realtime + refreshes its JWT.
+    const liveRow = liveApps.data?.find((a) => a.id === id);
+    if (isLive && liveRow) {
+      try {
+        await decideApplication(
+          liveRow._dbId,
+          decision === "Approved" ? "approved" : "rejected",
+          reason
+        );
+        invalidateLive();
+        const t = decision === "Approved" ? toast.success : toast.error;
+        t(`Application ${decision.toLowerCase()}`, {
+          description: `${id} — the operator has been notified.`,
+        });
+        pushAuditLog(
+          decision === "Approved"
+            ? `Approved operator ${id}`
+            : `Rejected operator ${id} — ${reason}`
+        );
+        if (decision === "Approved") {
+          pushNotif({
+            id: `na-${id}`,
+            kind: "application",
+            title: `Application ${id} approved`,
+            detail: `${id} is now an active operator.`,
+            section: "operators",
+            at: "Just now",
+          });
+        }
+      } catch (e) {
+        toast.error("Could not save decision", {
+          description: e instanceof Error ? e.message : "Please try again.",
+        });
+      }
+      setBusy((b) => ({ ...b, [id]: null }));
+      return;
+    }
     const prev = apps.find((a) => a.id === id)?.status ?? "Pending";
     await new Promise((r) => setTimeout(r, 500));
-    setApps((prevApps) =>
+    setMockApps((prevApps) =>
       prevApps.map((a) =>
         a.id === id
           ? {
@@ -5185,7 +5582,7 @@ export function OperatorMgmt() {
       action: {
         label: "Undo",
         onClick: () => {
-          setApps((prevApps) =>
+          setMockApps((prevApps) =>
             prevApps.map((a) =>
               a.id === id ? { ...a, status: prev, rejectReason: undefined } : a,
             ),
@@ -5251,17 +5648,47 @@ export function OperatorMgmt() {
       return n;
     });
     await new Promise((r) => setTimeout(r, 800));
-    setApps((prev) =>
-      prev.map((a) =>
-        ids.includes(a.id)
-          ? {
-              ...a,
-              status: decision,
-              ...(decision === "Rejected" ? { rejectReason: reason } : {}),
-            }
-          : a,
-      ),
-    );
+    // Live mode: persist each decision, then refetch once. Per-row results
+    // via allSettled — a single row failure must not report the batch as fully saved.
+    let succeeded: string[] = [];
+    let failed: { id: string; message: string }[] = [];
+    if (isLive && liveApps.data) {
+      const byId = new Map(liveApps.data.map((a) => [a.id, a._dbId]));
+      const results = await Promise.allSettled(
+        ids.map((id) => {
+          const dbId = byId.get(id);
+          if (!dbId) return Promise.reject(new Error(`No live record for ${id}`));
+          return decideApplication(
+            dbId,
+            decision === "Approved" ? "approved" : "rejected",
+            reason
+          );
+        })
+      );
+      results.forEach((res, i) => {
+        if (res.status === "fulfilled") succeeded.push(ids[i]);
+        else
+          failed.push({
+            id: ids[i],
+            message:
+              res.reason instanceof Error ? res.reason.message : "Save failed.",
+          });
+      });
+      invalidateLive();
+    } else {
+      setMockApps((prev) =>
+        prev.map((a) =>
+          ids.includes(a.id)
+            ? {
+                ...a,
+                status: decision,
+                ...(decision === "Rejected" ? { rejectReason: reason } : {}),
+              }
+            : a,
+        ),
+      );
+      succeeded = ids;
+    }
     setBusy((b) => {
       const n = { ...b };
       ids.forEach((id) => {
@@ -5269,25 +5696,41 @@ export function OperatorMgmt() {
       });
       return n;
     });
-    setSelected(new Set());
     setBulkBusy(false);
-    toast.success(
-      `${ids.length} application${ids.length !== 1 ? "s" : ""} ${decision.toLowerCase()}`,
-      {
-        description: `Bulk action completed. Operators have been notified.`,
-        icon:
-          decision === "Approved" ? (
-            <CheckCircle2 className="size-4" />
-          ) : (
-            <XCircle className="size-4" />
-          ),
-      },
-    );
-    if (decision === "Rejected") {
-      ids.forEach((id) => pushAuditLog(`Rejected operator ${id} — ${reason}`));
+    if (failed.length === 0) {
+      setSelected(new Set());
+      toast.success(
+        `${succeeded.length} application${succeeded.length !== 1 ? "s" : ""} ${decision.toLowerCase()}`,
+        {
+          description: `Bulk action completed. Operators have been notified.`,
+          icon:
+            decision === "Approved" ? (
+              <CheckCircle2 className="size-4" />
+            ) : (
+              <XCircle className="size-4" />
+            ),
+        },
+      );
+    } else if (succeeded.length === 0) {
+      // Keep the selection so the batch can be retried.
+      toast.error("Could not save bulk decision", {
+        description: `${failed.length} of ${ids.length} failed. First error: ${failed[0].message}`,
+      });
+      return;
     } else {
-      ids.forEach((id) => pushAuditLog(`Approved operator ${id}`));
-      ids.forEach((id) =>
+      setSelected(new Set(failed.map((f) => f.id)));
+      toast.error(
+        `${succeeded.length} of ${ids.length} applications ${decision.toLowerCase()}`,
+        {
+          description: `Failed: ${failed.map((f) => f.id).join(", ")}. First error: ${failed[0].message}`,
+        },
+      );
+    }
+    if (decision === "Rejected") {
+      succeeded.forEach((id) => pushAuditLog(`Rejected operator ${id} — ${reason}`));
+    } else {
+      succeeded.forEach((id) => pushAuditLog(`Approved operator ${id}`));
+      succeeded.forEach((id) =>
         pushNotif({
           id: `na-${id}`,
           kind: "application",
@@ -5304,17 +5747,24 @@ export function OperatorMgmt() {
     <div className="space-y-4">
       <Tabs value={currentTab} onValueChange={(v) => setFilters({ tab: v })}>
         <div className="flex items-center justify-between gap-4">
-          <TabsList className="bg-secondary">
-            <TabsTrigger value="applications">
-              Applications
-              {pendingCount > 0 && (
-                <Badge className="ml-2 h-5 px-1.5 bg-primary text-primary-foreground">
-                  {pendingCount}
-                </Badge>
-              )}
-            </TabsTrigger>
-            <TabsTrigger value="active">Active Operators</TabsTrigger>
-          </TabsList>
+          <div className="flex items-center gap-2">
+            <TabsList className="bg-secondary">
+              <TabsTrigger value="applications">
+                Applications
+                {pendingCount > 0 && (
+                  <Badge className="ml-2 h-5 px-1.5 bg-primary text-primary-foreground">
+                    {pendingCount}
+                  </Badge>
+                )}
+              </TabsTrigger>
+              <TabsTrigger value="active">Active Operators</TabsTrigger>
+            </TabsList>
+            <DataSourceBadge
+              live={isLiveData}
+              isError={liveApps.isError}
+              isLoading={liveApps.isFetching}
+            />
+          </div>
           <div className="flex items-center gap-2">
             <div className="relative">
               <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -5510,8 +5960,27 @@ export function OperatorMgmt() {
                               <Button
                                 size="sm"
                                 variant="ghost"
-                                onClick={() => {
-                                  setApps((prev) =>
+                                onClick={async () => {
+                                  const liveRow = liveApps.data?.find((a) => a.id === o.id);
+                                  if (isLive && liveRow) {
+                                    try {
+                                      // Reopen writes the same lowercase status convention as
+                                      // approve/reject ("pending" → "Pending" via cap() on refetch).
+                                      // Requires operator_applications.status to accept 'pending' (030).
+                                      await decideApplication(liveRow._dbId, "pending");
+                                      invalidateLive();
+                                      toast.info("Marked as pending again", {
+                                        description: o.id,
+                                      });
+                                    } catch (e) {
+                                      toast.error("Could not reopen", {
+                                        description:
+                                          e instanceof Error ? e.message : "Please try again.",
+                                      });
+                                    }
+                                    return;
+                                  }
+                                  setMockApps((prev) =>
                                     prev.map((a) =>
                                       a.id === o.id
                                         ? { ...a, status: "Pending" }
@@ -5665,7 +6134,43 @@ export function ReceiptVerification() {
   const { visibleMonths } = useGlobalDateRange();
   const [viewing, setViewing] = useState<any>(null);
   const [lightbox, setLightbox] = useState<any>(null);
-  const [items, setItems] = useState(receipts);
+  const [mockItems, setMockItems] = useState(receipts);
+  // Live mode (Supabase configured): receipts come from
+  // payment_transactions; mocks are the offline fallback.
+  const isLive = useLiveMode();
+  const liveReceipts = useReceiptsLive();
+  const invalidateLiveReceipts = useInvalidateLive();
+  const items = liveReceipts.data ?? mockItems;
+  useEffect(() => {
+    if (liveReceipts.isError) {
+      toast.error("Could not load live receipts", {
+        description: "Showing demo data. Check the Supabase connection.",
+      });
+    }
+  }, [liveReceipts.isError]);
+
+  const openLightbox = async (r: any) => {
+    if (isLive && r?.receiptPath && !r?.imageUrl) {
+      try {
+        const url = await getReceiptUrl(r.receiptPath);
+        if (url) {
+          setLightbox({ ...r, imageUrl: url });
+        } else {
+          setLightbox({ ...r, imageError: true });
+          toast.error("Could not load receipt image", {
+            description: `Signed URL failed for ${r?.ref ?? r?.id}. Check the operator_uploads bucket policy.`,
+          });
+        }
+      } catch (e) {
+        setLightbox({ ...r, imageError: true });
+        toast.error("Could not load receipt image", {
+          description: e instanceof Error ? e.message : "Please try again.",
+        });
+      }
+      return;
+    }
+    setLightbox(r);
+  };
   const [busy, setBusy] = useState<Record<string, "approve" | "reject" | null>>(
     {},
   );
@@ -5693,8 +6198,10 @@ export function ReceiptVerification() {
       if (search.dateTo && r.date > search.dateTo) return false;
       if (monthSet.size < 12) {
         const d = new Date(r.date + "T00:00:00");
-        const key = d.toLocaleString("en", { month: "short" });
-        if (!monthSet.has(key)) return false;
+        if (!Number.isNaN(d.getTime())) {
+          const key = d.toLocaleString("en", { month: "short" });
+          if (!monthSet.has(key)) return false;
+        }
       }
       return true;
     });
@@ -5740,8 +6247,53 @@ export function ReceiptVerification() {
     const key = decision === "Verified" ? "approve" : "reject";
     setBusy((b) => ({ ...b, [id]: key }));
     const target = items.find((r) => r.id === id);
+    // Live mode: persist to payment_transactions (030 staff policies).
+    // The operator's ledger updates once status becomes verified.
+    const liveRow = liveReceipts.data?.find((r) => r.id === id);
+    if (isLive && liveRow) {
+      try {
+        await decideReceipt(
+          liveRow._dbId,
+          decision === "Verified" ? "verified" : "rejected",
+          reason
+        );
+        invalidateLiveReceipts();
+        const t = decision === "Verified" ? toast.success : toast.error;
+        t(decision === "Verified" ? "Receipt verified" : "Receipt rejected", {
+          description: `${target?.operator} · Ref ${target?.ref} · ${target?.amount}`,
+          icon:
+            decision === "Verified" ? (
+              <CheckCircle2 className="size-4" />
+            ) : (
+              <XCircle className="size-4" />
+            ),
+        });
+        pushAuditLog(
+          decision === "Verified"
+            ? `Verified receipt ${id}`
+            : `Rejected receipt ${id} — ${reason}`
+        );
+        if (decision === "Verified") {
+          pushNotif({
+            id: `nc-${id}`,
+            kind: "receipt",
+            title: `Receipt ${id} verified`,
+            detail: `${target?.operator} · ${target?.amount} was approved.`,
+            section: "receipts",
+            at: "Just now",
+          });
+        }
+      } catch (e) {
+        toast.error("Could not save decision", {
+          description: e instanceof Error ? e.message : "Please try again.",
+        });
+      }
+      setBusy((b) => ({ ...b, [id]: null }));
+      setViewing((v: any) => (v && v.id === id ? null : v));
+      return;
+    }
     await new Promise((r) => setTimeout(r, 600));
-    setItems((prev) =>
+    setMockItems((prev) =>
       prev.map((r) =>
         r.id === id
           ? {
@@ -5818,17 +6370,47 @@ export function ReceiptVerification() {
       return n;
     });
     await new Promise((r) => setTimeout(r, 800));
-    setItems((prev) =>
-      prev.map((r) =>
-        ids.includes(r.id)
-          ? {
-              ...r,
-              status: decision,
-              ...(decision === "Rejected" ? { rejectReason: reason } : {}),
-            }
-          : r,
-      ),
-    );
+    // Live mode: persist each decision, then refetch once. Per-row results
+    // via allSettled — a single row failure must not report the batch as fully saved.
+    let succeeded: string[] = [];
+    let failed: { id: string; message: string }[] = [];
+    if (isLive && liveReceipts.data) {
+      const byId = new Map(liveReceipts.data.map((r) => [r.id, r._dbId]));
+      const results = await Promise.allSettled(
+        ids.map((id) => {
+          const dbId = byId.get(id);
+          if (!dbId) return Promise.reject(new Error(`No live record for ${id}`));
+          return decideReceipt(
+            dbId,
+            decision === "Approved" ? "verified" : "rejected",
+            reason
+          );
+        })
+      );
+      results.forEach((res, i) => {
+        if (res.status === "fulfilled") succeeded.push(ids[i]);
+        else
+          failed.push({
+            id: ids[i],
+            message:
+              res.reason instanceof Error ? res.reason.message : "Save failed.",
+          });
+      });
+      invalidateLiveReceipts();
+    } else {
+      setMockItems((prev) =>
+        prev.map((r) =>
+          ids.includes(r.id)
+            ? {
+                ...r,
+                status: decision,
+                ...(decision === "Rejected" ? { rejectReason: reason } : {}),
+              }
+            : r,
+        ),
+      );
+      succeeded = ids;
+    }
     setBusy((b) => {
       const n = { ...b };
       ids.forEach((id) => {
@@ -5836,26 +6418,42 @@ export function ReceiptVerification() {
       });
       return n;
     });
-    setSelected(new Set());
     setBulkBusy(false);
     const label = decision === "Approved" ? "Verified" : "Rejected";
-    toast.success(
-      `${ids.length} receipt${ids.length !== 1 ? "s" : ""} ${label.toLowerCase()}`,
-      {
-        description: `Bulk action completed.`,
-        icon:
-          decision === "Approved" ? (
-            <CheckCircle2 className="size-4" />
-          ) : (
-            <XCircle className="size-4" />
-          ),
-      },
-    );
-    if (decision === "Rejected") {
-      ids.forEach((id) => pushAuditLog(`Rejected receipt ${id} — ${reason}`));
+    if (failed.length === 0) {
+      setSelected(new Set());
+      toast.success(
+        `${succeeded.length} receipt${succeeded.length !== 1 ? "s" : ""} ${label.toLowerCase()}`,
+        {
+          description: `Bulk action completed.`,
+          icon:
+            decision === "Approved" ? (
+              <CheckCircle2 className="size-4" />
+            ) : (
+              <XCircle className="size-4" />
+            ),
+        },
+      );
+    } else if (succeeded.length === 0) {
+      // Keep the selection so the batch can be retried.
+      toast.error("Could not save bulk decision", {
+        description: `${failed.length} of ${ids.length} failed. First error: ${failed[0].message}`,
+      });
+      return;
     } else {
-      ids.forEach((id) => pushAuditLog(`Verified receipt ${id}`));
-      ids.forEach((id) =>
+      setSelected(new Set(failed.map((f) => f.id)));
+      toast.error(
+        `${succeeded.length} of ${ids.length} receipts ${label.toLowerCase()}`,
+        {
+          description: `Failed: ${failed.map((f) => f.id).join(", ")}. First error: ${failed[0].message}`,
+        },
+      );
+    }
+    if (decision === "Rejected") {
+      succeeded.forEach((id) => pushAuditLog(`Rejected receipt ${id} — ${reason}`));
+    } else {
+      succeeded.forEach((id) => pushAuditLog(`Verified receipt ${id}`));
+      succeeded.forEach((id) =>
         pushNotif({
           id: `nc-${id}`,
           kind: "receipt",
@@ -5868,10 +6466,19 @@ export function ReceiptVerification() {
     }
   };
 
+  const isLiveData = isLive && !!liveReceipts.data;
+
   return (
     <div className="space-y-4">
       {/* Search & Filters */}
       <div className="flex flex-col gap-3">
+        <div className="flex items-center gap-2">
+          <DataSourceBadge
+            live={isLiveData}
+            isError={liveReceipts.isError}
+            isLoading={liveReceipts.isFetching}
+          />
+        </div>
         <div className="flex flex-col md:flex-row gap-3 md:items-center">
           <div className="relative flex-1 max-w-md">
             <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -6031,7 +6638,7 @@ export function ReceiptVerification() {
                     </div>
                   </div>
                   <button
-                    onClick={() => setLightbox(r)}
+                    onClick={() => openLightbox(r)}
                     className="block w-full aspect-[4/3] bg-gradient-to-br from-primary-soft to-secondary relative cursor-zoom-in"
                   >
                     <div className="absolute inset-0 flex items-center justify-center text-primary/40">
@@ -6152,7 +6759,7 @@ export function ReceiptVerification() {
           {viewing && (
             <div className="space-y-4">
               <button
-                onClick={() => viewing && setLightbox(viewing)}
+                onClick={() => viewing && openLightbox(viewing)}
                 className="aspect-video w-full rounded-xl bg-gradient-to-br from-primary-soft to-secondary flex items-center justify-center text-primary/40 relative cursor-zoom-in"
               >
                 <ImageIcon className="size-20" />
@@ -6240,7 +6847,25 @@ export function ManifestoView() {
   const { search, setFilters, resetFilters } = useFilters();
   const { visibleMonths } = useGlobalDateRange();
   const [viewing, setViewing] = useState<any>(null);
-  const [items, setItems] = useState(manifestos);
+  const [roster, setRoster] = useState<any[] | null>(null);
+  const [rosterLoading, setRosterLoading] = useState(false);
+  const [rosterError, setRosterError] = useState(false);
+  const [mockItems, setMockItems] = useState(manifestos);
+  // Live mode (Supabase configured): manifests come from dive_manifests
+  // (+ manifest_divers counts); mocks are the offline fallback. Generate
+  // stays mock-only (operator-side creation, no staff INSERT grant).
+  const isLive = useLiveMode();
+  const liveManifests = useManifestsLive();
+  const invalidateManifests = useInvalidateLive();
+  const isLiveData = isLive && !!liveManifests.data;
+  const items = liveManifests.data ?? mockItems;
+  useEffect(() => {
+    if (liveManifests.isError) {
+      toast.error("Could not load live manifestos", {
+        description: "Showing demo data. Check the Supabase connection.",
+      });
+    }
+  }, [liveManifests.isError]);
   const [generating, setGenerating] = useState(false);
   const [rowBusy, setRowBusy] = useState<
     Record<string, "download" | "forward" | null>
@@ -6258,7 +6883,34 @@ export function ManifestoView() {
     "all" | "verified" | "unverified"
   >("all");
 
-  const toggleVerify = (id: string) => {
+  // Live mode reads verification from the row (032 verified flag); mock
+  // mode keeps the local Set with the first 15 pre-verified.
+  const isVerified = (m: any) =>
+    isLiveData ? m.verified === true : verifiedIds.has(m.id);
+
+  const toggleVerify = async (id: string) => {
+    if (!canAct) return deny();
+    // Live mode: persist to dive_manifests (032 verified + staff UPDATE).
+    const liveRow = liveManifests.data?.find((m) => m.id === id);
+    if (isLive && liveRow) {
+      const next = !liveRow.verified;
+      try {
+        await setManifestVerified(liveRow._dbId, next);
+        invalidateManifests();
+        if (next) {
+          toast.success(`Manifesto ${id} verified`);
+          pushAuditLog(`Verified manifesto ${id}`);
+        } else {
+          toast.info(`Manifesto ${id} marked as unverified`);
+          pushAuditLog(`Unverified manifesto ${id}`);
+        }
+      } catch (e) {
+        toast.error("Could not update manifesto", {
+          description: e instanceof Error ? e.message : "Please try again.",
+        });
+      }
+      return;
+    }
     setVerifiedIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) {
@@ -6290,23 +6942,38 @@ export function ManifestoView() {
       if (search.dateTo && m.date > search.dateTo) return false;
       if (monthSet.size < 12) {
         const d = new Date(m.date + "T00:00:00");
-        const key = d.toLocaleString("en", { month: "short" });
-        if (!monthSet.has(key)) return false;
+        if (!Number.isNaN(d.getTime())) {
+          const key = d.toLocaleString("en", { month: "short" });
+          if (!monthSet.has(key)) return false;
+        }
       }
-      if (verificationFilter === "verified" && !verifiedIds.has(m.id))
+      if (verificationFilter === "verified" && !isVerified(m))
         return false;
-      if (verificationFilter === "unverified" && verifiedIds.has(m.id))
+      if (verificationFilter === "unverified" && isVerified(m))
         return false;
       return true;
     });
   }, [
     items,
+    isLiveData,
+    verifiedIds,
+    verificationFilter,
     search.q,
     search.site,
     search.dateFrom,
     search.dateTo,
     visibleMonths,
   ]);
+
+  // Site options follow the data source: live locations when live, mock
+  // constants otherwise.
+  const siteOptions = useMemo(
+    () =>
+      isLiveData
+        ? [...new Set(items.map((m) => m.site).filter(Boolean))].sort()
+        : ALL_SITES,
+    [isLiveData, items]
+  );
 
   const {
     page: mPage,
@@ -6351,15 +7018,34 @@ export function ManifestoView() {
       divers: 6 + Math.floor(Math.random() * 8),
       date: new Date().toISOString().slice(0, 10),
     };
-    setItems((prev) => [newItem, ...prev]);
+    setMockItems((prev) => [newItem, ...prev]);
     setGeneratedIds((s) => new Set(s).add(newItem.id));
     setGenerating(false);
     toast.success("Manifesto generated", {
       id: tId,
       description: `${newItem.id} · ${newItem.site} · ${newItem.divers} divers`,
       icon: <Sparkles className="size-4" />,
-      action: { label: "View", onClick: () => setViewing(newItem) },
+      action: { label: "View", onClick: () => openViewing(newItem) },
     });
+  };
+
+  const openViewing = (m: any) => {
+    setViewing(m);
+    // Live mode: resolve the diver roster on demand from manifest_divers.
+    // Mock rows carry no _dbId and keep the count-only view.
+    if (isLive && m?._dbId) {
+      setRoster(null);
+      setRosterError(false);
+      setRosterLoading(true);
+      fetchManifestDivers(m._dbId)
+        .then((rows) => setRoster(rows))
+        .catch(() => setRosterError(true))
+        .finally(() => setRosterLoading(false));
+    } else {
+      setRoster(null);
+      setRosterError(false);
+      setRosterLoading(false);
+    }
   };
 
   const rowAction = async (m: any, kind: "download" | "forward") => {
@@ -6425,6 +7111,13 @@ export function ManifestoView() {
     <div className="space-y-4">
       {/* Search & Filters */}
       <div className="flex flex-col gap-3">
+        <div className="flex items-center gap-2">
+          <DataSourceBadge
+            live={isLiveData}
+            isError={liveManifests.isError}
+            isLoading={liveManifests.isFetching}
+          />
+        </div>
         <div className="flex flex-col md:flex-row gap-3 md:items-center">
           <div className="relative flex-1 max-w-md">
             <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -6444,7 +7137,7 @@ export function ManifestoView() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="All">All sites</SelectItem>
-              {ALL_SITES.map((s) => (
+              {siteOptions.map((s) => (
                 <SelectItem key={s} value={s}>
                   {s}
                 </SelectItem>
@@ -6488,7 +7181,12 @@ export function ManifestoView() {
           )}
           <Button
             onClick={generate}
-            disabled={generating}
+            disabled={generating || isLiveData}
+            title={
+              isLiveData
+                ? "Manifest creation lives in the operator app — the dashboard has no staff INSERT grant"
+                : undefined
+            }
             className="md:ml-auto gradient-primary text-primary-foreground shadow-glow"
           >
             {generating ? (
@@ -6590,7 +7288,7 @@ export function ManifestoView() {
                   }`}
                 >
                   <div
-                    onClick={() => setViewing(m)}
+                    onClick={() => openViewing(m)}
                     className="block w-full aspect-[4/3] gradient-primary relative cursor-pointer"
                   >
                     <div
@@ -6634,7 +7332,7 @@ export function ManifestoView() {
                     <div className="absolute top-3 right-3 rounded-full bg-white/20 backdrop-blur text-primary-foreground text-xs font-medium px-2.5 py-1">
                       {m.divers} divers
                     </div>
-                    {verifiedIds.has(m.id) && (
+                    {isVerified(m) && (
                       <div className="absolute top-3 left-10 rounded-full bg-green-500/90 text-white text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 flex items-center gap-1">
                         <ShieldCheck className="size-3" /> Verified
                       </div>
@@ -6665,19 +7363,19 @@ export function ManifestoView() {
                     <div className="flex gap-1.5 pt-1">
                       <Button
                         size="sm"
-                        variant={verifiedIds.has(m.id) ? "default" : "outline"}
+                        variant={isVerified(m) ? "default" : "outline"}
                         className="flex-1"
                         onClick={(e) => {
                           e.stopPropagation();
                           toggleVerify(m.id);
                         }}
                         title={
-                          verifiedIds.has(m.id)
+                          isVerified(m)
                             ? "Mark as unverified"
                             : "Mark as verified"
                         }
                       >
-                        {verifiedIds.has(m.id) ? (
+                        {isVerified(m) ? (
                           <ShieldCheck className="size-4" />
                         ) : (
                           <Shield className="size-4" />
@@ -6688,7 +7386,7 @@ export function ManifestoView() {
                         variant="ghost"
                         className="flex-1"
                         disabled={!!b}
-                        onClick={() => setViewing(m)}
+                        onClick={() => openViewing(m)}
                         title="Preview & download"
                       >
                         <Download className="size-4" />
@@ -6711,7 +7409,7 @@ export function ManifestoView() {
                         size="sm"
                         variant="ghost"
                         className="flex-1"
-                        onClick={() => setViewing(m)}
+                        onClick={() => openViewing(m)}
                         title="View"
                       >
                         <Eye className="size-4" />
@@ -6795,7 +7493,64 @@ export function ManifestoView() {
                   <Field label="Site" value={viewing.site} />
                   <Field label="Date" value={viewing.date} />
                   <Field label="Divers" value={`${viewing.divers} certified`} />
+                  {viewing.diveType && (
+                    <Field label="Dive Type" value={viewing.diveType} />
+                  )}
+                  {viewing.boatName && (
+                    <Field label="Boat" value={viewing.boatName} />
+                  )}
+                  {viewing.maxDivers != null && (
+                    <Field
+                      label="Capacity"
+                      value={`${viewing.divers}/${viewing.maxDivers}`}
+                    />
+                  )}
                 </div>
+
+                {viewing._dbId ? (
+                  <div className="space-y-2">
+                    <div className="text-sm font-semibold">
+                      Diver roster
+                      {roster ? ` (${roster.length})` : ""}
+                    </div>
+                    {rosterLoading ? (
+                      <div className="text-xs text-muted-foreground">
+                        Loading roster…
+                      </div>
+                    ) : rosterError ? (
+                      <div className="text-xs text-destructive">
+                        Could not load the roster. Close and reopen to retry.
+                      </div>
+                    ) : roster && roster.length > 0 ? (
+                      <ul className="max-h-48 overflow-y-auto divide-y divide-border/60 rounded-lg border border-border/60">
+                        {roster.map((d, i) => (
+                          <li
+                            key={i}
+                            className="flex items-center gap-2 px-3 py-2 text-sm"
+                          >
+                            <span className="font-medium flex-1 truncate">
+                              {d.name}
+                            </span>
+                            {d.ecoId && (
+                              <span className="text-xs text-muted-foreground font-mono">
+                                {d.ecoId}
+                              </span>
+                            )}
+                            {d.isWalkIn && (
+                              <Badge variant="secondary" className="text-[10px]">
+                                Walk-in
+                              </Badge>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : (
+                      <div className="text-xs text-muted-foreground">
+                        No divers recorded on this manifesto.
+                      </div>
+                    )}
+                  </div>
+                ) : null}
 
                 <div className="flex gap-2">
                   <Button
@@ -7849,15 +8604,67 @@ export function OperatorAnalytics() {
   const { scale } = useGlobalDateRange();
   const { setFilters } = useFilters();
   const [drillOperator, setDrillOperator] = useState<any>(null);
-  const scaledOperatorActivity = useMemo(
-    () =>
-      operatorActivity.map((o) => ({
-        ...o,
-        manifestos: Math.round(o.manifestos * Math.min(scale * 3, 1)),
-        credits: Math.round(o.credits * Math.min(scale * 3, 1)),
-      })),
-    [scale],
-  );
+  // Live per-operator performance (React Query cache — no extra fetch):
+  // manifest counts + diver sums from dive_manifests, credit use/purchase
+  // from dive_pass_inventory, revenue from inventory batch amounts. This
+  // replaces the mock's fixed 18.5/7.2/4200 multipliers with real math.
+  const liveManifestsOp = useManifestsLive();
+  const liveInventoryOp = useInventoryLive();
+  const opLive = !!(liveManifestsOp.data && liveInventoryOp.data);
+  const liveOperatorRows = useMemo(() => {
+    if (!liveManifestsOp.data || !liveInventoryOp.data) return null;
+    const map = new Map<
+      string,
+      {
+        name: string;
+        manifestos: number;
+        divers: number;
+        credits: number;
+        purchased: number;
+        remaining: number;
+        revenue: number;
+      }
+    >();
+    const row = (name: string) => {
+      let r = map.get(name);
+      if (!r) {
+        r = {
+          name,
+          manifestos: 0,
+          divers: 0,
+          credits: 0,
+          purchased: 0,
+          remaining: 0,
+          revenue: 0,
+        };
+        map.set(name, r);
+      }
+      return r;
+    };
+    for (const m of liveManifestsOp.data) {
+      const r = row(m.operator);
+      r.manifestos += 1;
+      r.divers += m.divers || 0;
+    }
+    for (const inv of liveInventoryOp.data) {
+      const r = row(inv.operator);
+      const used = inv.totalPasses - inv.remainingPasses;
+      r.credits += used;
+      r.purchased += inv.totalPasses;
+      r.remaining += inv.remainingPasses;
+      r.revenue += inv.amount || 0;
+    }
+    return [...map.values()].sort((a, b) => b.manifestos - a.manifestos);
+  }, [liveManifestsOp.data, liveInventoryOp.data]);
+  const opManifests = liveManifestsOp.data ?? manifestos;
+  const scaledOperatorActivity = useMemo(() => {
+    if (liveOperatorRows) return liveOperatorRows;
+    return operatorActivity.map((o) => ({
+      ...o,
+      manifestos: Math.round(o.manifestos * Math.min(scale * 3, 1)),
+      credits: Math.round(o.credits * Math.min(scale * 3, 1)),
+    }));
+  }, [liveOperatorRows, scale]);
 
   return (
     <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
@@ -8005,7 +8812,7 @@ export function OperatorAnalytics() {
                     <div
                       className="h-full gradient-primary"
                       style={{
-                        width: `${(o.manifestos / scaledOperatorActivity[0].manifestos) * 100}%`,
+                        width: `${((o.manifestos / (scaledOperatorActivity[0]?.manifestos || 1)) * 100).toFixed(1)}%`,
                       }}
                     />
                   </div>
@@ -8036,7 +8843,10 @@ export function OperatorAnalytics() {
                 },
                 {
                   label: "Utilization",
-                  value: `${((drillOperator.manifestos / drillOperator.credits) * 100).toFixed(0)}%`,
+                  value:
+                    drillOperator.credits > 0
+                      ? `${((drillOperator.manifestos / drillOperator.credits) * 100).toFixed(0)}%`
+                      : "—",
                   icon: TrendingUp,
                 },
               ]
@@ -8078,9 +8888,10 @@ export function OperatorAnalytics() {
                       Credits remaining
                     </TableCell>
                     <TableCell className="text-right font-medium">
-                      {(
-                        drillOperator.credits -
-                        Math.round(drillOperator.manifestos * 18.5)
+                      {(drillOperator.remaining != null
+                        ? drillOperator.remaining
+                        : drillOperator.credits -
+                          Math.round(drillOperator.manifestos * 18.5)
                       ).toLocaleString()}
                     </TableCell>
                   </TableRow>
@@ -8089,10 +8900,15 @@ export function OperatorAnalytics() {
                       Avg divers per manifest
                     </TableCell>
                     <TableCell className="text-right font-medium">
-                      {(
-                        Math.round(drillOperator.manifestos * 7.2) /
-                        drillOperator.manifestos
-                      ).toFixed(1)}
+                      {drillOperator.divers != null &&
+                      drillOperator.manifestos > 0
+                        ? (
+                            drillOperator.divers / drillOperator.manifestos
+                          ).toFixed(1)
+                        : (
+                            Math.round(drillOperator.manifestos * 7.2) /
+                            (drillOperator.manifestos || 1)
+                          ).toFixed(1)}
                     </TableCell>
                   </TableRow>
                   <TableRow>
@@ -8100,7 +8916,11 @@ export function OperatorAnalytics() {
                       Revenue generated
                     </TableCell>
                     <TableCell className="text-right font-medium">
-                      ₱{(drillOperator.manifestos * 4200).toLocaleString()}
+                      ₱{Math.round(
+                        drillOperator.revenue != null
+                          ? drillOperator.revenue
+                          : drillOperator.manifestos * 4200
+                      ).toLocaleString()}
                     </TableCell>
                   </TableRow>
                 </TableBody>
@@ -8120,9 +8940,11 @@ export function OperatorAnalytics() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {manifestos
-                    .filter((m) =>
-                      m.operator.includes(drillOperator.name.split(" ")[0]),
+                  {opManifests
+                    .filter((m: any) =>
+                      (m.operator ?? "").includes(
+                        drillOperator.name.split(" ")[0]
+                      )
                     )
                     .slice(0, 5)
                     .map((m) => (
@@ -8161,6 +8983,18 @@ export function Reports() {
   const [generating, setGenerating] = useState(false);
   const [reportData, setReportData] = useState<any[] | null>(null);
 
+  // Live sources (React Query cache — no extra fetch).
+  const liveTouristsRp = useTouristsLive();
+  const liveAppsRp = useOperatorApplicationsLive();
+  const liveManifestsRp = useManifestsLive();
+  const liveReceiptsRp = useReceiptsLive();
+  const rpLive = !!(
+    liveTouristsRp.data &&
+    liveAppsRp.data &&
+    liveManifestsRp.data &&
+    liveReceiptsRp.data
+  );
+
   const filteredTrends = useMemo(
     () => monthlyTrends.filter((d) => visibleMonths.includes(d.m)),
     [visibleMonths],
@@ -8168,6 +9002,102 @@ export function Reports() {
 
   const generateReport = async () => {
     setGenerating(true);
+    if (rpLive) {
+      // Real aggregation over live rows (no fake latency — instant).
+      const inRange = (d: string) => {
+        if (!d || d === "—") return false;
+        if (dateFrom && d < dateFrom) return false;
+        if (dateTo && d > dateTo) return false;
+        return true;
+      };
+      const tRows = liveTouristsRp.data!.filter((t: any) =>
+        inRange(t.registered ?? t.createdAt ?? "")
+      );
+      const aRows = liveAppsRp.data!.filter((a: any) => inRange(a.submitted));
+      const mRows = liveManifestsRp.data!.filter((m: any) => inRange(m.date));
+      const rRows = liveReceiptsRp.data!.filter((r: any) => inRange(r.date));
+      const money = (n: number) => `₱${Math.round(n).toLocaleString()}`;
+      const year = new Date().getFullYear();
+      const tB = bucketByMonth(tRows, (t: any) => t.registered ?? t.createdAt ?? "");
+      const aB = bucketByMonth(aRows, (a: any) => a.submitted);
+      const mB = bucketByMonth(
+        mRows,
+        (m: any) => m.date,
+        (m: any) => m.divers || 0
+      );
+      const rB = bucketByMonth(
+        rRows,
+        (r: any) => r.date,
+        (r: any) => r.amountNum || 0
+      );
+      const idx = (m: string) => MONTHS.indexOf(m as (typeof MONTHS)[number]);
+      const data =
+        range === "daily"
+          ? bucketByDay(tRows, (t: any) => t.registered ?? t.createdAt ?? "").map(
+              (b, i) => {
+                const aD = bucketByDay(aRows, (a: any) => a.submitted);
+                const mD = bucketByDay(
+                  mRows,
+                  (m: any) => m.date,
+                  (m: any) => m.divers || 0
+                );
+                const rD = bucketByDay(
+                  rRows,
+                  (r: any) => r.date,
+                  (r: any) => r.amountNum || 0
+                );
+                return {
+                  period: b.label,
+                  tourists: b.count,
+                  operators: aD[i]?.count ?? 0,
+                  manifestos: mD[i]?.count ?? 0,
+                  dives: mD[i]?.total ?? 0,
+                  revenue: money(rD[i]?.total ?? 0),
+                };
+              }
+            )
+          : range === "weekly"
+            ? bucketByWeek(tRows, (t: any) => t.registered ?? t.createdAt ?? "").map(
+                (b, i) => {
+                  const aW = bucketByWeek(aRows, (a: any) => a.submitted);
+                  const mW = bucketByWeek(
+                    mRows,
+                    (m: any) => m.date,
+                    (m: any) => m.divers || 0
+                  );
+                  const rW = bucketByWeek(
+                    rRows,
+                    (r: any) => r.date,
+                    (r: any) => r.amountNum || 0
+                  );
+                  return {
+                    period: b.label,
+                    tourists: b.count,
+                    operators: aW[i]?.count ?? 0,
+                    manifestos: mW[i]?.count ?? 0,
+                    dives: mW[i]?.total ?? 0,
+                    revenue: money(rW[i]?.total ?? 0),
+                  };
+                }
+              )
+            : visibleMonths.map((m) => {
+                const mi = idx(m);
+                return {
+                  period: `${m} ${year}`,
+                  tourists: tB[mi]?.count ?? 0,
+                  operators: aB[mi]?.count ?? 0,
+                  manifestos: mB[mi]?.count ?? 0,
+                  dives: mB[mi]?.total ?? 0,
+                  revenue: money(rB[mi]?.total ?? 0),
+                };
+              });
+      setReportData(data);
+      setGenerating(false);
+      toast.success(`${range} report generated`, {
+        description: `${data.length} periods included (live data).`,
+      });
+      return;
+    }
     await new Promise((r) => setTimeout(r, 1200));
     const data =
       range === "daily"
