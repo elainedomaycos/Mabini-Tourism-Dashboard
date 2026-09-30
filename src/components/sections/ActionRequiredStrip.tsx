@@ -31,11 +31,14 @@ export function ActionRequiredStrip({
   void operatorApps;
   void manifestos;
   const items: ActionItem[] = useMemo(() => {
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
     const expiringPasses = tourists.filter((t) => {
-      const exp = new Date(t.expires);
-      const now = new Date("2026-07-25");
+      if (t.status !== "Active" || !t.expires || t.expires === "—") return false;
+      const exp = new Date(t.expires + "T00:00:00");
+      if (Number.isNaN(exp.getTime())) return false;
       const diff = (exp.getTime() - now.getTime()) / (1000 * 60 * 60 * 24);
-      return diff > 0 && diff <= 30 && t.status === "Active";
+      return diff > 0 && diff <= 30;
     }).length;
 
     return [
