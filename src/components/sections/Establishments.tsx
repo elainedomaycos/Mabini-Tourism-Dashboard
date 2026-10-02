@@ -1,4 +1,4 @@
-import { useState, useMemo } from "react";
+import { useState, useMemo, useEffect } from "react";
 import {
   Building2,
   MapPin,
@@ -41,10 +41,19 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { useFilters } from "@/routes/index";
+import { useFilters, pushAuditLog, DataSourceBadge } from "@/routes/index";
+import { requireLiveSession } from "@/lib/staff-auth";
+import {
+  useLiveMode,
+  useEstablishmentsLive,
+  setEstablishmentSuspended,
+  useInvalidateLive,
+  dbErrorMessage,
+} from "@/lib/queries";
 import { toast } from "sonner";
 
 type Establishment = {
+  _dbId?: string;
   id: string;
   name: string;
   owner: string;
@@ -394,6 +403,33 @@ function PermitIndicator({ dateStr }: { dateStr: string }) {
 }
 const BARANGAYS = ["San Teodoro", "Solo", "Batas", "San Joaquin"];
 
+// Live rows carry the DB subset; the view fills display-only mock fields
+// (permit data, certifications, ratings) with neutral placeholders. Those
+// sections stay visibly empty until permit management exists — never faked.
+const toEstablishmentView = (e: any): Establishment => ({
+  id: e.id,
+  name: e.name,
+  owner: e.owner ?? "Unknown owner",
+  address: e.address ?? e.location ?? "—",
+  barangay: e.barangay ?? "—",
+  permitNumber: e.permitNumber ?? "—",
+  permitType: e.permitType ?? "—",
+  permitExpiry: e.permitExpiry ?? "—",
+  contactEmail: e.contactEmail ?? "—",
+  contactPhone: e.contactPhone ?? "—",
+  status: e.status,
+  dateRegistered: e.dateRegistered ?? "—",
+  totalManifestos: e.totalManifestos ?? 0,
+  rating: e.rating ?? 0,
+  ecoRating: e.ecoRating ?? 0,
+  certifications: e.certifications ?? [],
+  assignedDiveSites: e.assignedDiveSites ?? [],
+  creditBalance: e.creditBalance ?? 0,
+  website: e.website ?? "",
+  facebook: e.facebook ?? "",
+  _dbId: e._dbId,
+});
+
 export function Establishments() {
   const { setFilters } = useFilters();
   const [search, setSearch] = useState("");
@@ -404,7 +440,25 @@ export function Establishments() {
     null,
   );
   const [suspendReason, setSuspendReason] = useState("");
-  const [data, setData] = useState(ESTABLISHMENT_DATA);
+  const [mockData, setMockData] = useState(ESTABLISHMENT_DATA);
+  // Live mode (Supabase configured): registry comes from establishments
+  // (+ manifest/credit rollups); mocks are the offline fallback.
+  const isLive = useLiveMode();
+  const liveEstablishments = useEstablishmentsLive();
+  const invalidateEst = useInvalidateLive();
+  const isLiveData = isLive && !!liveEstablishments.data;
+  const data = useMemo(
+    () => (liveEstablishments.data ?? mockData).map(toEstablishmentView),
+    [liveEstablishments.data, mockData]
+  );
+  const [opBusy, setOpBusy] = useState<Record<string, boolean>>({});
+  useEffect(() => {
+    if (liveEstablishments.isError) {
+      toast.error("Could not load live establishments", {
+        description: "Showing demo data. Check the Supabase connection.",
+      });
+    }
+  }, [liveEstablishments.isError]);
 
   const filtered = useMemo(() => {
     return data.filter((e) => {
@@ -431,28 +485,83 @@ export function Establishments() {
     [data],
   );
 
-  function handleSuspend() {
+  // Barangay options follow the data source (live distinct values when live).
+  const barangayOptions = useMemo(
+    () =>
+      isLiveData
+        ? [...new Set(data.map((e) => e.barangay).filter((b) => b !== "—"))].sort()
+        : BARANGAYS,
+    [isLiveData, data]
+  );
+
+  async function handleSuspend() {
     if (!suspendTarget) return;
     if (suspendReason.trim().length < 5) {
       toast.error("Reason must be at least 5 characters.");
       return;
     }
-    setData((prev) =>
+    // Live mode: persist via accredited=false (035). The reason has no
+    // column — it goes to the audit log only, stated not stored.
+    const dbId = (suspendTarget as any)._dbId as string | undefined;
+    if (isLive && dbId) {
+      if (!(await requireLiveSession())) return;
+      setOpBusy((b) => ({ ...b, [suspendTarget.id]: true }));
+      try {
+        await setEstablishmentSuspended(dbId, true);
+        invalidateEst();
+        pushAuditLog(
+          `Suspended establishment ${suspendTarget.name} — ${suspendReason.trim()}`
+        );
+        toast.success(`${suspendTarget.name} has been suspended.`);
+        setSuspendTarget(null);
+        setSuspendReason("");
+      } catch (e) {
+        toast.error("Could not suspend establishment", {
+          description: dbErrorMessage(e),
+        });
+      } finally {
+        setOpBusy((b) => ({ ...b, [suspendTarget.id]: false }));
+      }
+      return;
+    }
+    setMockData((prev) =>
       prev.map((e) =>
         e.id === suspendTarget.id ? { ...e, status: "Suspended" as const } : e,
       ),
+    );
+    pushAuditLog(
+      `Suspended establishment ${suspendTarget.name} — ${suspendReason.trim()}`
     );
     toast.success(`${suspendTarget.name} has been suspended.`);
     setSuspendTarget(null);
     setSuspendReason("");
   }
 
-  function handleReactivate(est: Establishment) {
-    setData((prev) =>
+  async function handleReactivate(est: Establishment) {
+    const dbId = (est as any)._dbId as string | undefined;
+    if (isLive && dbId) {
+      if (!(await requireLiveSession())) return;
+      setOpBusy((b) => ({ ...b, [est.id]: true }));
+      try {
+        await setEstablishmentSuspended(dbId, false);
+        invalidateEst();
+        pushAuditLog(`Reactivated establishment ${est.name}`);
+        toast.success(`${est.name} has been reactivated.`);
+      } catch (e) {
+        toast.error("Could not reactivate establishment", {
+          description: dbErrorMessage(e),
+        });
+      } finally {
+        setOpBusy((b) => ({ ...b, [est.id]: false }));
+      }
+      return;
+    }
+    setMockData((prev) =>
       prev.map((e) =>
         e.id === est.id ? { ...e, status: "Active" as const } : e,
       ),
     );
+    pushAuditLog(`Reactivated establishment ${est.name}`);
     toast.success(`${est.name} has been reactivated.`);
   }
 
@@ -463,6 +572,13 @@ export function Establishments() {
   return (
     <div className="space-y-6">
       <Reveal>
+        <div className="flex items-center gap-2 mb-3">
+          <DataSourceBadge
+            live={isLiveData}
+            isError={liveEstablishments.isError}
+            isLoading={liveEstablishments.isFetching}
+          />
+        </div>
         <SectionCard
           title="Registered Establishments"
           action={
@@ -490,7 +606,7 @@ export function Establishments() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="All">All Barangays</SelectItem>
-                  {BARANGAYS.map((b) => (
+                  {barangayOptions.map((b) => (
                     <SelectItem key={b} value={b}>
                       {b}
                     </SelectItem>
@@ -571,7 +687,8 @@ export function Establishments() {
                       <TableCell className="text-right">
                         <span className="flex items-center justify-end gap-1 text-sm">
                           <CreditCard className="size-3 text-primary" />
-                          ${est.creditBalance.toLocaleString()}
+                          {(est as any)._dbId ? "₱" : "$"}
+                          {est.creditBalance.toLocaleString()}
                         </span>
                       </TableCell>
                       <TableCell className="text-right">
@@ -579,6 +696,7 @@ export function Establishments() {
                           <Button
                             variant="ghost"
                             size="sm"
+                            disabled={!!opBusy[est.id]}
                             className="h-7 text-xs text-destructive hover:text-destructive hover:bg-destructive/10"
                             onClick={(ev) => {
                               ev.stopPropagation();
@@ -593,6 +711,7 @@ export function Establishments() {
                           <Button
                             variant="ghost"
                             size="sm"
+                            disabled={!!opBusy[est.id]}
                             className="h-7 text-xs text-success hover:text-success hover:bg-success/10"
                             onClick={(ev) => {
                               ev.stopPropagation();
@@ -664,7 +783,7 @@ export function Establishments() {
                 />
                 <Field
                   label="Credit Balance"
-                  value={`$${detail.creditBalance.toLocaleString()}`}
+                  value={`${(detail as any)._dbId ? "₱" : "$"}${detail.creditBalance.toLocaleString()}`}
                 />
                 <Field
                   label="Website"
@@ -701,10 +820,21 @@ export function Establishments() {
                   }
                 />
               </div>
+              {(detail as any)._dbId && (
+                <p className="text-[11px] text-muted-foreground rounded-lg bg-secondary/40 border border-border/60 px-3 py-2">
+                  Permit, certification and rating data have no source table
+                  yet — those sections are intentionally blank, not loaded.
+                </p>
+              )}
               <div>
                 <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-2">
                   Assigned Dive Sites
                 </div>
+                {detail.assignedDiveSites.length === 0 ? (
+                  <span className="text-xs text-muted-foreground">
+                    None recorded
+                  </span>
+                ) : (
                 <div className="flex flex-wrap gap-1.5">
                   {detail.assignedDiveSites.map((site) => (
                     <Badge
@@ -725,19 +855,30 @@ export function Establishments() {
                     </Badge>
                   ))}
                 </div>
+                )}
               </div>
               <div>
                 <div className="text-[10px] uppercase tracking-wider text-muted-foreground mb-2">
                   Certifications
                 </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {detail.certifications.map((cert) => (
-                    <Badge key={cert} variant="secondary" className="text-xs">
-                      <ShieldCheck className="size-3 mr-1" />
-                      {cert}
-                    </Badge>
-                  ))}
-                </div>
+                {detail.certifications.length === 0 ? (
+                  <span className="text-xs text-muted-foreground">
+                    None recorded
+                  </span>
+                ) : (
+                  <div className="flex flex-wrap gap-1.5">
+                    {detail.certifications.map((cert) => (
+                      <Badge
+                        key={cert}
+                        variant="secondary"
+                        className="text-xs"
+                      >
+                        <ShieldCheck className="size-3 mr-1" />
+                        {cert}
+                      </Badge>
+                    ))}
+                  </div>
+                )}
               </div>
               <div className="flex justify-end gap-2 pt-2 border-t border-border/60">
                 {detail.status === "Active" && (
@@ -827,7 +968,12 @@ export function Establishments() {
             >
               Cancel
             </Button>
-            <Button variant="destructive" size="sm" onClick={handleSuspend}>
+            <Button
+              variant="destructive"
+              size="sm"
+              disabled={!!(suspendTarget && opBusy[suspendTarget.id])}
+              onClick={handleSuspend}
+            >
               Confirm Suspend
             </Button>
           </DialogFooter>

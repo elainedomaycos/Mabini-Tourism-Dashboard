@@ -67,7 +67,6 @@ import {
   Users2,
   Sun,
   Moon,
-  Activity,
   UserCog,
   Lock,
   AlertTriangle,
@@ -158,8 +157,13 @@ import {
   signInStaff,
   signOutStaff,
   useStaffSession,
+  useStaffSessionValue,
+  requireLiveSession,
+  getAccessToken,
+  StaffSessionContext,
   type StaffSession,
 } from "@/lib/staff-auth";
+import { createStaffAccount } from "@/lib/create-staff-fn";
 import {
   useLiveMode,
   useLiveRealtime,
@@ -168,17 +172,34 @@ import {
   useTouristsLive,
   useManifestsLive,
   useInventoryLive,
+  useDiveSitesLive,
   decideApplication,
   decideReceipt,
   setTouristStatus,
   renewTourist,
   setManifestVerified,
   fetchManifestDivers,
+  addDiveSite,
+  updateDiveSite,
+  deleteDiveSite,
+  countManifestsByLocation,
+  createEstablishmentFromApplication,
+  getTouristContact,
+  type LiveAppRow,
+  setSiteStatus,
+  getSitePhotoUrl,
+  uploadSitePhoto,
   getReceiptUrl,
   useInvalidateLive,
+  useStaffLive,
+  setStaffActive,
+  setStaffRole,
   bucketByMonth,
   bucketByDay,
   bucketByWeek,
+  dbErrorMessage,
+  useAuditLogsLive,
+  logAuditEvent,
   type MonthBucket,
 } from "@/lib/queries";
 import { ReceiptLightbox } from "@/components/ReceiptLightbox";
@@ -1204,254 +1225,7 @@ const operatorActivity = [
   { name: "Aqua Ventures", manifestos: 38, credits: 780 },
   { name: "Nautilus Exp.", manifestos: 29, credits: 600 },
 ];
-const auditLogs = [
-  {
-    date: "2026-07-25",
-    t: "10:24",
-    who: "admin@reef.gov",
-    action: "Approved operator OP-2203",
-  },
-  {
-    date: "2026-07-25",
-    t: "09:58",
-    who: "clerk@reef.gov",
-    action: "Verified receipt RC-88429",
-  },
-  {
-    date: "2026-07-25",
-    t: "09:31",
-    who: "admin@reef.gov",
-    action: "Pushed announcement #A-014",
-  },
-  {
-    date: "2026-07-25",
-    t: "08:47",
-    who: "clerk@reef.gov",
-    action: "Suspended tourist TR-10245",
-  },
-  {
-    date: "2026-07-24",
-    t: "17:12",
-    who: "admin@reef.gov",
-    action: "Approved operator OP-2205",
-  },
-  {
-    date: "2026-07-24",
-    t: "16:45",
-    who: "officer@reef.gov",
-    action: "Generated monthly report",
-  },
-  {
-    date: "2026-07-24",
-    t: "14:30",
-    who: "clerk@reef.gov",
-    action: "Verified receipt RC-88425",
-  },
-  {
-    date: "2026-07-24",
-    t: "11:20",
-    who: "admin@reef.gov",
-    action: "Rejected operator OP-2204",
-  },
-  {
-    date: "2026-07-23",
-    t: "16:05",
-    who: "clerk@reef.gov",
-    action: "Verified receipt RC-88420",
-  },
-  {
-    date: "2026-07-23",
-    t: "14:18",
-    who: "officer@reef.gov",
-    action: "Added dive site DS-009",
-  },
-  {
-    date: "2026-07-23",
-    t: "10:42",
-    who: "admin@reef.gov",
-    action: "Approved operator OP-2207",
-  },
-  {
-    date: "2026-07-22",
-    t: "15:33",
-    who: "clerk@reef.gov",
-    action: "Verified receipt RC-88415",
-  },
-  {
-    date: "2026-07-22",
-    t: "13:10",
-    who: "admin@reef.gov",
-    action: "Pushed announcement #A-013",
-  },
-  {
-    date: "2026-07-22",
-    t: "09:55",
-    who: "officer@reef.gov",
-    action: "Registered tourist TR-10254",
-  },
-  {
-    date: "2026-07-21",
-    t: "16:40",
-    who: "admin@reef.gov",
-    action: "Approved operator OP-2206",
-  },
-  {
-    date: "2026-07-21",
-    t: "14:22",
-    who: "clerk@reef.gov",
-    action: "Verified receipt RC-88410",
-  },
-  {
-    date: "2026-07-21",
-    t: "11:05",
-    who: "officer@reef.gov",
-    action: "Suspended tourist TR-10252",
-  },
-  {
-    date: "2026-07-20",
-    t: "17:30",
-    who: "admin@reef.gov",
-    action: "Reverted receipt RC-88408",
-  },
-  {
-    date: "2026-07-20",
-    t: "15:15",
-    who: "clerk@reef.gov",
-    action: "Verified receipt RC-88405",
-  },
-  {
-    date: "2026-07-20",
-    t: "10:20",
-    who: "admin@reef.gov",
-    action: "Updated system config: 2FA required",
-  },
-  {
-    date: "2026-07-19",
-    t: "16:15",
-    who: "clerk@reef.gov",
-    action: "Verified receipt RC-88400",
-  },
-  {
-    date: "2026-07-19",
-    t: "13:40",
-    who: "admin@reef.gov",
-    action: "Approved operator OP-2209",
-  },
-  {
-    date: "2026-07-18",
-    t: "17:05",
-    who: "officer@reef.gov",
-    action: "Registered tourist TR-10260",
-  },
-  {
-    date: "2026-07-18",
-    t: "14:50",
-    who: "clerk@reef.gov",
-    action: "Verified receipt RC-88395",
-  },
-  {
-    date: "2026-07-18",
-    t: "11:30",
-    who: "admin@reef.gov",
-    action: "Rejected operator OP-2213",
-  },
-  {
-    date: "2026-07-17",
-    t: "16:20",
-    who: "clerk@reef.gov",
-    action: "Verified receipt RC-88390",
-  },
-  {
-    date: "2026-07-17",
-    t: "13:15",
-    who: "admin@reef.gov",
-    action: "Approved operator OP-2210",
-  },
-  {
-    date: "2026-07-17",
-    t: "10:45",
-    who: "officer@reef.gov",
-    action: "Pushed announcement #A-012",
-  },
-  {
-    date: "2026-07-16",
-    t: "17:30",
-    who: "admin@reef.gov",
-    action: "Suspended tourist TR-10268",
-  },
-  {
-    date: "2026-07-16",
-    t: "14:10",
-    who: "clerk@reef.gov",
-    action: "Verified receipt RC-88385",
-  },
-  {
-    date: "2026-07-15",
-    t: "16:50",
-    who: "admin@reef.gov",
-    action: "Approved operator OP-2212",
-  },
-  {
-    date: "2026-07-15",
-    t: "13:30",
-    who: "officer@reef.gov",
-    action: "Registered tourist TR-10265",
-  },
-  {
-    date: "2026-07-15",
-    t: "10:15",
-    who: "clerk@reef.gov",
-    action: "Verified receipt RC-88380",
-  },
-  {
-    date: "2026-07-14",
-    t: "17:00",
-    who: "admin@reef.gov",
-    action: "Rejected operator OP-2216",
-  },
-  {
-    date: "2026-07-14",
-    t: "14:25",
-    who: "clerk@reef.gov",
-    action: "Verified receipt RC-88375",
-  },
-  {
-    date: "2026-07-14",
-    t: "11:40",
-    who: "officer@reef.gov",
-    action: "Added dive site DS-010",
-  },
-  {
-    date: "2026-07-13",
-    t: "16:35",
-    who: "admin@reef.gov",
-    action: "Approved operator OP-2215",
-  },
-  {
-    date: "2026-07-13",
-    t: "13:20",
-    who: "clerk@reef.gov",
-    action: "Verified receipt RC-88370",
-  },
-  {
-    date: "2026-07-12",
-    t: "17:10",
-    who: "officer@reef.gov",
-    action: "Registered tourist TR-10258",
-  },
-  {
-    date: "2026-07-12",
-    t: "14:55",
-    who: "admin@reef.gov",
-    action: "Pushed announcement #A-011",
-  },
-  {
-    date: "2026-07-12",
-    t: "11:05",
-    who: "clerk@reef.gov",
-    action: "Verified receipt RC-88365",
-  },
-];
+const auditLogs: { date: string; t: string; who: string; action: string }[] = [];
 
 const CHART_COLORS = [
   "var(--color-chart-1)",
@@ -1465,14 +1239,16 @@ const CHART_COLORS = [
 type AuditEntry = { date: string; t: string; who: string; action: string };
 
 const liveAuditLogs: AuditEntry[] = [...auditLogs];
-// Local-only audit trail (in-memory, lost on reload — no audit_logs table in
-// 030 scope). Attributed to the signed-in staffer via setAuditWho().
+// Dual-write audit trail: unshift to memory immediately (UI stays instant)
+// and persist to audit_logs (038) in the background, fire-and-forget — a
+// failed insert never fails the action. Attributed to the signed-in staffer
+// via setAuditWho().
 let currentAuditWho = "staff@local";
 export function setAuditWho(email: string) {
   currentAuditWho = email;
 }
 const auditLogListeners = new Set<() => void>();
-function pushAuditLog(action: string) {
+export function pushAuditLog(action: string, entity?: string) {
   const now = new Date();
   liveAuditLogs.unshift({
     date: now.toISOString().slice(0, 10),
@@ -1481,6 +1257,7 @@ function pushAuditLog(action: string) {
     action,
   });
   auditLogListeners.forEach((fn) => fn());
+  void logAuditEvent(action, entity);
 }
 function useLiveAuditLogs() {
   const [, force] = useState(0);
@@ -1491,7 +1268,9 @@ function useLiveAuditLogs() {
       auditLogListeners.delete(fn);
     };
   }, []);
-  return liveAuditLogs;
+  // Fresh copy each render so downstream useMemo sees new entries (the
+  // module array mutates in place and keeps its identity).
+  return [...liveAuditLogs];
 }
 
 const AUDIT_TYPES = [
@@ -1683,10 +1462,12 @@ function useGlobalDateRange() {
 }
 
 /* ------------------------------ PLATFORM FEATURES ------------------------------ */
-// Single-role system: every staff session is a superadmin (DB has no roles).
-// The old localStorage role switcher was removed — permissions come from
-// the staff login gate, not a client-side toggle.
-type Role = "superadmin";
+// Two tiers (034): staff (operations — queues, registries, announcements)
+// vs superadmin (full access, incl. users/roles/settings/pricing). The role
+// comes from the staff session (to_staff.role); enforcement lives in RLS —
+// this only drives UI gating. The old localStorage role switcher was
+// removed — permissions come from the login gate, not a client-side toggle.
+type Role = "staff" | "superadmin";
 const ROLE_META: Record<
   Role,
   { label: string; desc: string; className: string; icon: any }
@@ -1697,12 +1478,21 @@ const ROLE_META: Record<
     className: "bg-primary/15 text-primary border-primary/30",
     icon: ShieldCheck,
   },
+  staff: {
+    label: "TO Staff",
+    desc: "Operations — queues, registries & announcements",
+    className: "bg-sky-500/10 text-sky-700 dark:text-sky-400 border-sky-500/30",
+    icon: Shield,
+  },
 };
 function useRole() {
-  return useMemo(
-    () => ({ role: "superadmin" as Role, canAct: true, canAdmin: true }),
-    []
-  );
+  const session = useStaffSessionValue();
+  return useMemo(() => {
+    // No session (shouldn't happen behind the gate): fail closed on admin,
+    // stay permissive on operations (writes are still RLS-enforced).
+    const role: Role = session?.role === "superadmin" ? "superadmin" : "staff";
+    return { role, canAct: true, canAdmin: role === "superadmin" };
+  }, [session?.role]);
 }
 function usePermission() {
   const { canAct, canAdmin } = useRole();
@@ -1951,13 +1741,16 @@ function App() {
     <>
       <Toaster position="top-right" richColors />
       {session ? (
-        <Dashboard
-          session={session}
-          onLogout={async () => {
-            await signOutStaff();
-            setSession(null);
-          }}
-        />
+        <StaffSessionContext.Provider value={session}>
+          <Dashboard
+            session={session}
+            onLogout={async () => {
+              pushAuditLog(`Signed out ${session.email}`);
+              await signOutStaff();
+              setSession(null);
+            }}
+          />
+        </StaffSessionContext.Provider>
       ) : (
         <Login onLogin={(s) => setSession(s)} />
       )}
@@ -1986,6 +1779,11 @@ function Login({ onLogin }: { onLogin: (s: StaffSession) => void }) {
       setError(res.error);
       return;
     }
+    // Attribute before logging: the Dashboard effect sets the same value on
+    // mount, but the entry must carry the sign-in identity even if that
+    // effect hasn't run yet.
+    setAuditWho(res.session.email);
+    pushAuditLog(`Signed in as ${res.session.email}`);
     onLogin(res.session);
   };
   return (
@@ -2171,6 +1969,13 @@ function DashboardShell({
 }) {
   const { search, setFilters } = useFilters();
   const [searchOpen, setSearchOpen] = useState(false);
+  const liveSitesShell = useDiveSitesLive();
+  // Command palette searches live sites when available (normalized view so
+  // depth/barangay keys match the mock shape).
+  const paletteSites = useMemo(
+    () => (liveSitesShell.data ?? diveSites).map(toSiteView),
+    [liveSitesShell.data]
+  );
   const { role } = useRole();
   const { theme, toggle } = useTheme();
   const section = search.section;
@@ -2434,7 +2239,21 @@ function DashboardShell({
               {section === "dive-pass" && <DivePassPage />}
               {section === "analytics" && <AnalyticsPage />}
               {section === "announcements" && <Announcements />}
-              {section === "settings" && <SettingsPage />}
+              {section === "settings" &&
+                (role === "superadmin" ? (
+                  <SettingsPage />
+                ) : (
+                  <Card className="p-12 shadow-elegant border-border/60 text-center">
+                    <ShieldAlert className="size-10 mx-auto text-muted-foreground" />
+                    <h2 className="mt-4 font-display text-lg font-semibold">
+                      Restricted area
+                    </h2>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Settings is limited to superadmins. Your TO Staff role
+                      covers queues, registries and announcements.
+                    </p>
+                  </Card>
+                ))}
             </PageTransition>
           </main>
         </div>
@@ -2507,7 +2326,7 @@ function DashboardShell({
             ))}
           </CommandGroup>
           <CommandGroup heading="Dive Sites">
-            {diveSites.map((s) => (
+            {paletteSites.map((s) => (
               <CommandItem
                 key={s.id}
                 value={`dive site ${s.name} ${s.id} ${s.barangay} ${s.type} ${s.difficulty}`}
@@ -2546,7 +2365,7 @@ function RoleBadge({ compact = false }: { compact?: boolean }) {
   );
 }
 
-function DataSourceBadge({
+export function DataSourceBadge({
   live,
   isError = false,
   isLoading = false,
@@ -2876,11 +2695,19 @@ function Overview({ session }: { session?: StaffSession | null }) {
   const liveAppsOv = useOperatorApplicationsLive();
   const liveReceiptsOv = useReceiptsLive();
   const liveManifestsOv = useManifestsLive();
+  const isLive = useLiveMode();
+  const liveSitesOv = useDiveSitesLive();
   const ovLive = !!(
     liveTouristsOv.data &&
     liveAppsOv.data &&
     liveReceiptsOv.data &&
     liveManifestsOv.data
+  );
+  const ovSites = (liveSitesOv.data ?? diveSites).map(toSiteView);
+  const ovSitesLive = isLive && !!liveSitesOv.data;
+  const siteBuckets = useMemo(
+    () => bucketByMonth(ovSites, (s) => s.createdAt ?? ""),
+    [ovSites]
   );
   const ovTourists = useMemo(() => {
     const rows = liveTouristsOv.data ?? tourists;
@@ -3204,14 +3031,26 @@ function Overview({ session }: { session?: StaffSession | null }) {
                 delta: ovLive ? eDelta.label : "+3",
                 up: ovLive ? eDelta.up : true,
               },
-              {
-                icon: MapPin,
-                label: "Active Sites",
-                value: String(
-                  diveSites.filter((s) => s.status === "Active").length,
-                ),
-                delta: "+1",
-              },
+            {
+              icon: MapPin,
+              label: "Active Sites",
+              value: String(
+                ovSites.filter((s) => s.status === "Active").length,
+              ),
+              delta: ovSitesLive
+                ? (() => {
+                    const d =
+                      siteBuckets[monthIdxNow].count -
+                      siteBuckets[monthIdxPrev].count;
+                    return `${d >= 0 ? "+" : ""}${d}`;
+                  })()
+                : "+1",
+              up: ovSitesLive
+                ? siteBuckets[monthIdxNow].count -
+                    siteBuckets[monthIdxPrev].count >=
+                  0
+                : true,
+            },
             ];
             return cards.map((s) => (
               <StatCard
@@ -3742,7 +3581,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
       >
         {drillSite &&
           (() => {
-            const site = diveSites.find((s) => s.name === drillSite.name);
+            const site = ovSites.find((s) => s.name === drillSite.name);
             return site ? (
               <Card className="p-4 shadow-elegant mt-2">
                 <h4 className="font-display font-semibold text-sm mb-3">
@@ -3853,7 +3692,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {diveSites
+                {ovSites
                   .filter((s) => s.type === drillDiveType.name)
                   .map((s) => (
                     <TableRow key={s.id}>
@@ -3869,7 +3708,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
                       <TableCell>{s.dives}</TableCell>
                     </TableRow>
                   ))}
-                {diveSites.filter((s) => s.type === drillDiveType.name)
+                {ovSites.filter((s) => s.type === drillDiveType.name)
                   .length === 0 && (
                   <TableRow>
                     <TableCell
@@ -4858,6 +4697,7 @@ function TouristMgmt({ session }: { session?: StaffSession | null }) {
   const suspendViewing = async () => {
     if (!viewing) return;
     if (!canAct) return deny();
+    if (isLive && !(await requireLiveSession())) return;
     if (!!session?.userId && (viewing as any)._dbId === session.userId) {
       toast.error("Action not allowed", {
         description: "This is your own staff account.",
@@ -4883,7 +4723,7 @@ function TouristMgmt({ session }: { session?: StaffSession | null }) {
         );
       } catch (e) {
         toast.error("Could not update tourist", {
-          description: e instanceof Error ? e.message : "Please try again.",
+          description: dbErrorMessage(e),
         });
       } finally {
         setRowBusy(null);
@@ -4907,6 +4747,7 @@ function TouristMgmt({ session }: { session?: StaffSession | null }) {
   const renewViewing = async () => {
     if (!viewing) return;
     if (!canAct) return deny();
+    if (isLive && !(await requireLiveSession())) return;
     if (!!session?.userId && (viewing as any)._dbId === session.userId) {
       toast.error("Action not allowed", {
         description: "This is your own staff account.",
@@ -4927,7 +4768,7 @@ function TouristMgmt({ session }: { session?: StaffSession | null }) {
         });
       } catch (e) {
         toast.error("Could not renew tourist", {
-          description: e instanceof Error ? e.message : "Please try again.",
+          description: dbErrorMessage(e),
         });
       } finally {
         setRowBusy(null);
@@ -5516,12 +5357,60 @@ export function OperatorMgmt() {
     else if (key === "status") setFilters({ status: "All" });
   };
 
+  // Graduation: approving an application creates its establishment row.
+  // The approval stands even if graduation fails — failures report with a
+  // retry action instead of rolling back (no silent half-states).
+  const graduate = async (row: LiveAppRow): Promise<void> => {
+    const contact = await getTouristContact(row.tourist_id);
+    await createEstablishmentFromApplication({
+      resortName: row.name,
+      resortLocation: row.resort_location,
+      contactNumber: row.contact_number,
+      touristEmail: contact.email,
+      website: row.website,
+    });
+  };
+
+  const runGraduations = async (rows: LiveAppRow[], quiet: boolean) => {
+    const outcomes = await Promise.allSettled(rows.map((r) => graduate(r)));
+    const failedRows = rows.filter((_, i) => outcomes[i].status === "rejected");
+    outcomes.forEach((o, i) => {
+      if (o.status === "fulfilled") {
+        pushAuditLog(
+          `Registered establishment for ${rows[i].id} (${rows[i].name})`
+        );
+        if (!quiet) {
+          toast.success("Establishment registered", {
+            description: `${rows[i].name} is now in the registry.`,
+          });
+        }
+      } else {
+        pushAuditLog(
+          `Establishment creation failed for ${rows[i].id} — ${dbErrorMessage((o as PromiseRejectedResult).reason)}`
+        );
+      }
+    });
+    invalidateLive();
+    if (failedRows.length > 0) {
+      toast.error("Application approved — establishment not created", {
+        description: `Failed: ${failedRows.map((r) => r.id).join(", ")}`,
+        action: {
+          label: "Retry",
+          onClick: () => {
+            void runGraduations(failedRows, quiet);
+          },
+        },
+      });
+    }
+  };
+
   const decide = async (
     id: string,
     decision: "Approved" | "Rejected",
     reason?: string,
   ) => {
     if (!canAct) return deny();
+    if (isLive && !(await requireLiveSession())) return;
     const key = decision === "Approved" ? "approve" : "reject";
     setBusy((b) => ({ ...b, [id]: key }));
     // Live mode: persist the decision to Supabase (030 staff policies).
@@ -5553,10 +5442,11 @@ export function OperatorMgmt() {
             section: "operators",
             at: "Just now",
           });
+          void runGraduations([liveRow], false);
         }
       } catch (e) {
         toast.error("Could not save decision", {
-          description: e instanceof Error ? e.message : "Please try again.",
+          description: dbErrorMessage(e),
         });
       }
       setBusy((b) => ({ ...b, [id]: null }));
@@ -5653,6 +5543,17 @@ export function OperatorMgmt() {
     let succeeded: string[] = [];
     let failed: { id: string; message: string }[] = [];
     if (isLive && liveApps.data) {
+      if (!(await requireLiveSession())) {
+        setBusy((b) => {
+          const n = { ...b };
+          ids.forEach((id) => {
+            n[id] = null;
+          });
+          return n;
+        });
+        setBulkBusy(false);
+        return;
+      }
       const byId = new Map(liveApps.data.map((a) => [a.id, a._dbId]));
       const results = await Promise.allSettled(
         ids.map((id) => {
@@ -5670,8 +5571,7 @@ export function OperatorMgmt() {
         else
           failed.push({
             id: ids[i],
-            message:
-              res.reason instanceof Error ? res.reason.message : "Save failed.",
+            message: dbErrorMessage(res.reason),
           });
       });
       invalidateLive();
@@ -5740,6 +5640,13 @@ export function OperatorMgmt() {
           at: "Just now",
         }),
       );
+      if (isLive && liveApps.data) {
+        const snapshot = liveApps.data;
+        const rows = succeeded
+          .map((id) => snapshot.find((a) => a.id === id))
+          .filter((r): r is LiveAppRow => !!r);
+        if (rows.length > 0) await runGraduations(rows, true);
+      }
     }
   };
 
@@ -5963,6 +5870,7 @@ export function OperatorMgmt() {
                                 onClick={async () => {
                                   const liveRow = liveApps.data?.find((a) => a.id === o.id);
                                   if (isLive && liveRow) {
+                                    if (!(await requireLiveSession())) return;
                                     try {
                                       // Reopen writes the same lowercase status convention as
                                       // approve/reject ("pending" → "Pending" via cap() on refetch).
@@ -5974,8 +5882,7 @@ export function OperatorMgmt() {
                                       });
                                     } catch (e) {
                                       toast.error("Could not reopen", {
-                                        description:
-                                          e instanceof Error ? e.message : "Please try again.",
+                                        description: dbErrorMessage(e),
                                       });
                                     }
                                     return;
@@ -6164,7 +6071,7 @@ export function ReceiptVerification() {
       } catch (e) {
         setLightbox({ ...r, imageError: true });
         toast.error("Could not load receipt image", {
-          description: e instanceof Error ? e.message : "Please try again.",
+          description: dbErrorMessage(e),
         });
       }
       return;
@@ -6244,6 +6151,7 @@ export function ReceiptVerification() {
     reason?: string,
   ) => {
     if (!canAct) return deny();
+    if (isLive && !(await requireLiveSession())) return;
     const key = decision === "Verified" ? "approve" : "reject";
     setBusy((b) => ({ ...b, [id]: key }));
     const target = items.find((r) => r.id === id);
@@ -6285,7 +6193,7 @@ export function ReceiptVerification() {
         }
       } catch (e) {
         toast.error("Could not save decision", {
-          description: e instanceof Error ? e.message : "Please try again.",
+          description: dbErrorMessage(e),
         });
       }
       setBusy((b) => ({ ...b, [id]: null }));
@@ -6375,6 +6283,17 @@ export function ReceiptVerification() {
     let succeeded: string[] = [];
     let failed: { id: string; message: string }[] = [];
     if (isLive && liveReceipts.data) {
+      if (!(await requireLiveSession())) {
+        setBusy((b) => {
+          const n = { ...b };
+          ids.forEach((id) => {
+            n[id] = null;
+          });
+          return n;
+        });
+        setBulkBusy(false);
+        return;
+      }
       const byId = new Map(liveReceipts.data.map((r) => [r.id, r._dbId]));
       const results = await Promise.allSettled(
         ids.map((id) => {
@@ -6392,8 +6311,7 @@ export function ReceiptVerification() {
         else
           failed.push({
             id: ids[i],
-            message:
-              res.reason instanceof Error ? res.reason.message : "Save failed.",
+            message: dbErrorMessage(res.reason),
           });
       });
       invalidateLiveReceipts();
@@ -6890,6 +6808,7 @@ export function ManifestoView() {
 
   const toggleVerify = async (id: string) => {
     if (!canAct) return deny();
+    if (isLive && !(await requireLiveSession())) return;
     // Live mode: persist to dive_manifests (032 verified + staff UPDATE).
     const liveRow = liveManifests.data?.find((m) => m.id === id);
     if (isLive && liveRow) {
@@ -6906,7 +6825,7 @@ export function ManifestoView() {
         }
       } catch (e) {
         toast.error("Could not update manifesto", {
-          description: e instanceof Error ? e.message : "Please try again.",
+          description: dbErrorMessage(e),
         });
       }
       return;
@@ -7704,6 +7623,75 @@ function ForwardForm({
 }
 
 /* ------------------------------ DIVE SITE MANAGEMENT ------------------------------ */
+// Canonical site view: normalizes live rows (siteCode/depthRange/siteType/
+// photoUrl/dives) and mock rows (id/depth/type/photo) to one shape so all
+// render code below works on both sources unchanged.
+const toSiteView = (s: any) => ({
+  _dbId: s._dbId,
+  id: s.siteCode ?? s.id,
+  name: s.name,
+  barangay: s.barangay ?? "—",
+  depth: s.depthRange ?? s.depth ?? "—",
+  difficulty: s.difficulty ?? "—",
+  type: s.siteType ?? s.type ?? "—",
+  status: s.status,
+  dives: s.dives ?? 0,
+  description: s.description ?? "",
+  photo: s.photo ?? null,
+  photoPath: s.photoUrl ?? null,
+  lat: s.lat,
+  lng: s.lng,
+  createdAt: s.createdAt ?? null,
+});
+
+// Signed-URL cache shared by every SitePhoto (list + dialog + heatmap
+// tooltip): one network call per storage path per session.
+const sitePhotoCache = new Map<string, string | null>();
+
+function SitePhoto({
+  photo,
+  photoPath,
+  alt,
+  className,
+}: {
+  photo?: string | null;
+  photoPath?: string | null;
+  alt: string;
+  className?: string;
+}) {
+  const [url, setUrl] = useState<string | null>(photo ?? null);
+  useEffect(() => {
+    if (photo) {
+      setUrl(photo);
+      return;
+    }
+    if (!photoPath) {
+      setUrl(null);
+      return;
+    }
+    const cached = sitePhotoCache.get(photoPath);
+    if (cached !== undefined) {
+      setUrl(cached);
+      return;
+    }
+    let live = true;
+    getSitePhotoUrl(photoPath)
+      .then((u) => {
+        sitePhotoCache.set(photoPath, u);
+        if (live) setUrl(u);
+      })
+      .catch(() => {
+        sitePhotoCache.set(photoPath, null);
+        if (live) setUrl(null);
+      });
+    return () => {
+      live = false;
+    };
+  }, [photo, photoPath]);
+  if (!url) return null;
+  return <img src={url} alt={alt} className={className} />;
+}
+
 export function DiveSiteMgmt({
   hideHeader = false,
   forcedTab,
@@ -7711,11 +7699,32 @@ export function DiveSiteMgmt({
   hideHeader?: boolean;
   forcedTab?: string;
 } = {}) {
-  const { canAct, deny } = usePermission();
+  const { canAct, canAdmin, deny } = usePermission();
   const { search, setFilters, resetFilters } = useFilters();
-  const { scale } = useGlobalDateRange();
   const [viewing, setViewing] = useState<any>(null);
-  const [sites, setSites] = useState(diveSites);
+  const [mockSites, setMockSites] = useState(diveSites);
+  // Edit mode reuses the add dialog (prefilled); delete uses its own confirm.
+  const [editTarget, setEditTarget] = useState<any>(null);
+  const [deleteTarget, setDeleteTarget] = useState<any>(null);
+  const [clearPhoto, setClearPhoto] = useState(false);
+  // Live mode (Supabase configured): sites come from dive_sites (+ diver
+  // counts rolled up from manifests); mocks are the offline fallback.
+  const isLive = useLiveMode();
+  const liveSites = useDiveSitesLive();
+  const liveManifestsDs = useManifestsLive();
+  const invalidateSites = useInvalidateLive();
+  const isLiveData = isLive && !!liveSites.data;
+  const sites = useMemo(
+    () => (liveSites.data ?? mockSites).map(toSiteView),
+    [liveSites.data, mockSites]
+  );
+  useEffect(() => {
+    if (liveSites.isError) {
+      toast.error("Could not load live dive sites", {
+        description: "Showing demo data. Check the Supabase connection.",
+      });
+    }
+  }, [liveSites.isError]);
   const [addOpen, setAddOpen] = useState(false);
   const [newSite, setNewSite] = useState({
     name: "",
@@ -7723,8 +7732,15 @@ export function DiveSiteMgmt({
     depth: "",
     difficulty: "Open Water",
     type: "Reef",
+    description: "",
+    lat: "13.7620",
+    lng: "120.9210",
     photo: "",
   });
+  const [photoFile, setPhotoFile] = useState<File | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [toggling, setToggling] = useState<Record<string, boolean>>({});
   const [siteErrors, setSiteErrors] = useState<Record<string, string>>({});
   const fileRef = useRef<HTMLInputElement>(null);
   const [drillSite, setDrillSite] = useState<any>(null);
@@ -7748,13 +7764,49 @@ export function DiveSiteMgmt({
     });
   }, [sites, search.q, search.status, search.difficulty, search.siteType]);
 
-  const scaledTopSites = useMemo(
+  // Site usage: live mode counts divers from this month's manifests per
+  // site (matching the "This Month" title); mock mode ranks all-time totals.
+  const siteUsage = useMemo(() => {
+    if (isLiveData && liveManifestsDs.data) {
+      const cur = new Date().getMonth();
+      const sums = new Map<string, number>();
+      for (const m of liveManifestsDs.data) {
+        const d = new Date(m.date + "T00:00:00");
+        if (Number.isNaN(d.getTime()) || d.getMonth() !== cur) continue;
+        sums.set(m.site, (sums.get(m.site) || 0) + (m.divers || 0));
+      }
+      return [...sums.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 8)
+        .map(([name, value]) => ({ name, value }));
+    }
+    return [...sites]
+      .sort((a, b) => b.dives - a.dives)
+      .slice(0, 8)
+      .map((s) => ({ name: s.name, value: s.dives }));
+  }, [isLiveData, liveManifestsDs.data, sites]);
+
+  // Filter options follow the data source (live distinct values when live).
+  const difficultyOptions = useMemo(
     () =>
-      topSites.map((s) => ({
-        ...s,
-        value: Math.round(s.value * Math.min(scale * 3, 1)),
-      })),
-    [scale],
+      isLiveData
+        ? [...new Set(sites.map((s) => s.difficulty).filter((d) => d !== "—"))].sort()
+        : ALL_DIFFICULTIES,
+    [isLiveData, sites]
+  );
+  const siteTypeOptions = useMemo(
+    () =>
+      isLiveData
+        ? [...new Set(sites.map((s) => s.type).filter((t) => t !== "—"))].sort()
+        : ALL_SITE_TYPES,
+    [isLiveData, sites]
+  );
+  const barangayOptions = useMemo(
+    () =>
+      isLiveData
+        ? [...new Set(sites.map((s) => s.barangay).filter((b) => b !== "—"))].sort()
+        : ALL_BARANGAYS,
+    [isLiveData, sites]
   );
 
   const activeFilters: { key: string; label: string }[] = [];
@@ -7789,39 +7841,263 @@ export function DiveSiteMgmt({
       e.depth = "e.g. 10–30 m or 15 m";
     if (!newSite.difficulty) e.difficulty = "Select difficulty";
     if (!newSite.type) e.type = "Select type";
+    const lat = Number(newSite.lat);
+    const lng = Number(newSite.lng);
+    if (!newSite.lat.trim() || Number.isNaN(lat) || lat < -90 || lat > 90)
+      e.lat = "Latitude between -90 and 90";
+    if (!newSite.lng.trim() || Number.isNaN(lng) || lng < -180 || lng > 180)
+      e.lng = "Longitude between -180 and 180";
     setSiteErrors(e);
     return Object.keys(e).length === 0;
   };
 
-  const addSite = () => {
-    if (!canAct) return deny();
-    if (!validateSite())
-      return toast.error("Please fix the highlighted fields");
-    const site = {
-      id: `DS-${String(sites.length + 1).padStart(3, "0")}`,
-      ...newSite,
-      name: newSite.name.trim(),
-      depth: newSite.depth.trim(),
-      status: "Active",
-      dives: 0,
-      description: "",
-      lat: 13.75 + Math.random() * 0.02,
-      lng: 120.92 + Math.random() * 0.03,
-    };
-    setSites((prev) => [site, ...prev]);
-    setAddOpen(false);
+  const nextSiteCode = () => {
+    const nums = sites
+      .map((s) => /^DS-(\d+)$/.exec(s.id)?.[1])
+      .filter((n): n is string => !!n)
+      .map(Number)
+      .filter((n) => !Number.isNaN(n));
+    return `DS-${String((nums.length ? Math.max(...nums) : 0) + 1).padStart(3, "0")}`;
+  };
+
+  const resetSiteForm = () =>
     setNewSite({
       name: "",
       barangay: "",
       depth: "",
       difficulty: "Open Water",
       type: "Reef",
+      description: "",
+      lat: "13.7620",
+      lng: "120.9210",
       photo: "",
     });
+
+  const addSite = async () => {
+    if (!canAct) return deny();
+    if (isLive && !(await requireLiveSession())) return;
+    if (!validateSite())
+      return toast.error("Please fix the highlighted fields");
+    const base = {
+      name: newSite.name.trim(),
+      barangay: newSite.barangay,
+      depth: newSite.depth.trim(),
+      difficulty: newSite.difficulty,
+      type: newSite.type,
+      description: newSite.description.trim(),
+      lat: Number(newSite.lat),
+      lng: Number(newSite.lng),
+    };
+    // Live mode: upload the photo (if any), then insert the row (033).
+    const liveRow = isLiveData;
+    if (isLive && liveRow) {
+      setAdding(true);
+      try {
+        let photoUrl: string | null = null;
+        if (photoFile) {
+          photoUrl = await uploadSitePhoto(photoFile);
+        }
+        await addDiveSite({
+          siteCode: nextSiteCode(),
+          ...base,
+          depthRange: base.depth,
+          siteType: base.type,
+          photoUrl,
+        });
+        invalidateSites();
+        setAddOpen(false);
+        resetSiteForm();
+        setPhotoFile(null);
+        setSiteErrors({});
+        toast.success("Dive site added", {
+          description: `${base.name} — ${base.barangay}`,
+        });
+        pushAuditLog(`Added dive site ${base.name}`);
+      } catch (e) {
+        toast.error("Could not add dive site", {
+          description: dbErrorMessage(e),
+        });
+      } finally {
+        setAdding(false);
+      }
+      return;
+    }
+    const site = {
+      id: nextSiteCode(),
+      ...base,
+      photo: newSite.photo,
+      status: "Active",
+      dives: 0,
+    };
+    setMockSites((prev) => [site, ...prev]);
+    setAddOpen(false);
+    resetSiteForm();
+    setPhotoFile(null);
     setSiteErrors({});
     toast.success("Dive site added", {
       description: `${site.name} — ${site.barangay}`,
     });
+  };
+
+  const closeSiteDialog = () => {
+    setAddOpen(false);
+    setEditTarget(null);
+    setPhotoFile(null);
+    setClearPhoto(false);
+    setSiteErrors({});
+    resetSiteForm();
+    if (fileRef.current) fileRef.current.value = "";
+  };
+
+  const openEdit = (site: any) => {
+    if (!canAct) return deny();
+    setNewSite({
+      name: site.name ?? "",
+      barangay: site.barangay && site.barangay !== "—" ? site.barangay : "",
+      depth: site.depth && site.depth !== "—" ? site.depth : "",
+      difficulty: site.difficulty && site.difficulty !== "—" ? site.difficulty : "Open Water",
+      type: site.type && site.type !== "—" ? site.type : "Reef",
+      description: site.description ?? "",
+      lat: site.lat != null ? String(site.lat) : "",
+      lng: site.lng != null ? String(site.lng) : "",
+      photo: "",
+    });
+    setPhotoFile(null);
+    setClearPhoto(false);
+    setSiteErrors({});
+    setEditTarget(site);
+  };
+
+  const saveEdit = async () => {
+    if (!canAct) return deny();
+    if (!editTarget) return;
+    if (isLive && !(await requireLiveSession())) return;
+    if (!validateSite())
+      return toast.error("Please fix the highlighted fields");
+    const base = {
+      name: newSite.name.trim(),
+      barangay: newSite.barangay,
+      depth: newSite.depth.trim(),
+      difficulty: newSite.difficulty,
+      type: newSite.type,
+      description: newSite.description.trim(),
+      lat: Number(newSite.lat),
+      lng: Number(newSite.lng),
+    };
+    // Live mode: upload a replacement photo (if any), then update the row.
+    if (isLive && editTarget._dbId) {
+      setAdding(true);
+      try {
+        let photoUrl: string | null = editTarget.photoPath ?? null;
+        let photoPreview: string | null = editTarget.photo ?? null;
+        if (photoFile) {
+          photoUrl = await uploadSitePhoto(photoFile);
+          photoPreview = newSite.photo || null;
+        } else if (clearPhoto) {
+          photoUrl = null;
+          photoPreview = null;
+        }
+        await updateDiveSite(editTarget._dbId, {
+          ...base,
+          depthRange: base.depth,
+          siteType: base.type,
+          photoUrl,
+        });
+        invalidateSites();
+        const updated = {
+          ...editTarget,
+          ...base,
+          photo: photoPreview,
+          photoPath: photoUrl,
+        };
+        setViewing((v: any) => (v && v.id === editTarget.id ? updated : v));
+        closeSiteDialog();
+        pushAuditLog(`Edited dive site ${editTarget.id} — ${base.name}`);
+        toast.success("Dive site updated", { description: base.name });
+      } catch (e) {
+        toast.error("Could not update dive site", {
+          description: dbErrorMessage(e),
+        });
+      } finally {
+        setAdding(false);
+      }
+      return;
+    }
+    const photo = photoFile ? newSite.photo : clearPhoto ? "" : editTarget.photo;
+    setMockSites((prev) =>
+      prev.map((s) =>
+        s.id === editTarget.id ? { ...s, ...base, photo } : s
+      )
+    );
+    setViewing((v: any) =>
+      v && v.id === editTarget.id ? { ...v, ...base, photo } : v
+    );
+    closeSiteDialog();
+    pushAuditLog(`Edited dive site ${editTarget.id} — ${base.name}`);
+    toast.success("Dive site updated", { description: base.name });
+  };
+
+  const attemptDelete = async (site: any) => {
+    if (!canAdmin) return deny("Only Super Admin can delete dive sites.");
+    if (isLive && !(await requireLiveSession())) return;
+    const blocked = (refs: number) => {
+      toast.error("Cannot delete this site", {
+        description: `${refs} manifesto${refs !== 1 ? "s" : ""} reference${refs !== 1 ? "" : "s"} ${site.name} — set it to Restricted instead.`,
+      });
+    };
+    // Live mode: refuse when manifests reference the location so history
+    // stays linked; Restricted status is the removal path instead.
+    if (isLive && site._dbId) {
+      try {
+        const refs = await countManifestsByLocation(site.name);
+        if (refs > 0) {
+          blocked(refs);
+          return;
+        }
+      } catch (e) {
+        toast.error("Could not check references", {
+          description: dbErrorMessage(e),
+        });
+        return;
+      }
+      setDeleteTarget(site);
+      return;
+    }
+    const refs = manifestos.filter((m) => m.site === site.name).length;
+    if (refs > 0) {
+      blocked(refs);
+      return;
+    }
+    setDeleteTarget(site);
+  };
+
+  const doDelete = async () => {
+    if (!deleteTarget) return;
+    if (!canAdmin) return deny("Only Super Admin can delete dive sites.");
+    if (isLive && !(await requireLiveSession())) return;
+    setDeleting(true);
+    try {
+      if (isLive && deleteTarget._dbId) {
+        await deleteDiveSite(deleteTarget._dbId);
+        invalidateSites();
+      } else {
+        setMockSites((prev) => prev.filter((s) => s.id !== deleteTarget.id));
+      }
+      setViewing((v: any) => (v && v.id === deleteTarget.id ? null : v));
+      pushAuditLog(
+        `Deleted dive site ${deleteTarget.id} — ${deleteTarget.name}`
+      );
+      toast.success("Dive site deleted", {
+        description: deleteTarget.name,
+      });
+      setDeleteTarget(null);
+    } catch (e) {
+      toast.error("Could not delete dive site", {
+        description: dbErrorMessage(e),
+      });
+    } finally {
+      setDeleting(false);
+    }
   };
 
   const onPhotoPick = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -7831,25 +8107,69 @@ export function DiveSiteMgmt({
       return toast.error("Please select an image file");
     if (file.size > 5 * 1024 * 1024)
       return toast.error("Image must be under 5 MB");
+    setPhotoFile(file);
     const reader = new FileReader();
     reader.onload = () =>
       setNewSite((s) => ({ ...s, photo: reader.result as string }));
     reader.readAsDataURL(file);
   };
 
-  const toggleStatus = (id: string) => {
-    setSites((prev) =>
+  const nextStatusOf = (status: string): "Active" | "Seasonal" | "Restricted" =>
+    status === "Active"
+      ? "Restricted"
+      : status === "Restricted"
+        ? "Seasonal"
+        : "Active";
+
+  // Month-over-month diver movement for one site (live manifests only).
+  const siteTrend = (siteName: string): string | null => {
+    const rows = liveManifestsDs.data;
+    if (!isLive || !rows) return null;
+    const sumMonth = (idx: number) =>
+      rows
+        .filter((m) => {
+          if (m.site !== siteName) return false;
+          const d = new Date(m.date + "T00:00:00");
+          return !Number.isNaN(d.getTime()) && d.getMonth() === idx;
+        })
+        .reduce((a, m) => a + (m.divers || 0), 0);
+    const cur = new Date().getMonth();
+    const diff = sumMonth(cur) - sumMonth((cur + 11) % 12);
+    return `${diff >= 0 ? "+" : ""}${diff}`;
+  };
+
+  const toggleStatus = async (id: string) => {
+    if (!canAct) return deny();
+    if (isLive && !(await requireLiveSession())) return;
+    // Live mode: persist the status cycle (033 staff UPDATE).
+    const liveRow = liveSites.data?.find((s) => s.siteCode === id);
+    if (isLive && liveRow) {
+      const view = sites.find((s) => s.id === id);
+      const next = nextStatusOf(view?.status ?? "Active");
+      setToggling((t) => ({ ...t, [id]: true }));
+      try {
+        await setSiteStatus(liveRow._dbId, next);
+        invalidateSites();
+        toast.info(`Status updated`, {
+          description: `${view?.name ?? id} → ${next}`,
+        });
+        pushAuditLog(`Updated dive site ${id} status to ${next}`);
+      } catch (e) {
+        toast.error("Could not update site status", {
+          description: dbErrorMessage(e),
+        });
+      } finally {
+        setToggling((t) => ({ ...t, [id]: false }));
+      }
+      return;
+    }
+    setMockSites((prev) =>
       prev.map((s) => {
         if (s.id !== id) return s;
-        const next =
-          s.status === "Active"
-            ? "Restricted"
-            : s.status === "Restricted"
-              ? "Seasonal"
-              : "Active";
+        const next = nextStatusOf(s.status);
         toast.info(`Status updated`, { description: `${s.name} → ${next}` });
         return { ...s, status: next };
-      }),
+      })
     );
   };
 
@@ -7874,6 +8194,13 @@ export function DiveSiteMgmt({
         <TabsContent value="sites" className="mt-0 space-y-4">
           {/* Search & Filters */}
           <div className="flex flex-col gap-3">
+            <div className="flex items-center gap-2">
+              <DataSourceBadge
+                live={isLiveData}
+                isError={liveSites.isError}
+                isLoading={liveSites.isFetching}
+              />
+            </div>
             <div className="flex flex-col md:flex-row gap-3 md:items-center">
               <div className="relative flex-1 max-w-md">
                 <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
@@ -7906,14 +8233,14 @@ export function DiveSiteMgmt({
                 <SelectTrigger className="w-40">
                   <SelectValue placeholder="Difficulty" />
                 </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="All">All difficulties</SelectItem>
-                  {ALL_DIFFICULTIES.map((d) => (
-                    <SelectItem key={d} value={d}>
-                      {d}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
+              <SelectContent>
+                <SelectItem value="All">All difficulties</SelectItem>
+                {difficultyOptions.map((d) => (
+                  <SelectItem key={d} value={d}>
+                    {d}
+                  </SelectItem>
+                ))}
+              </SelectContent>
               </Select>
               <Select
                 value={search.siteType}
@@ -7922,14 +8249,14 @@ export function DiveSiteMgmt({
                 <SelectTrigger className="w-36">
                   <SelectValue placeholder="Type" />
                 </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="All">All types</SelectItem>
-                  {ALL_SITE_TYPES.map((t) => (
-                    <SelectItem key={t} value={t}>
-                      {t}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
+              <SelectContent>
+                <SelectItem value="All">All types</SelectItem>
+                {siteTypeOptions.map((t) => (
+                  <SelectItem key={t} value={t}>
+                    {t}
+                  </SelectItem>
+                ))}
+              </SelectContent>
               </Select>
               {activeFilters.length > 0 && (
                 <Button
@@ -7950,7 +8277,15 @@ export function DiveSiteMgmt({
               )}
               <Button
                 className="ml-auto gradient-primary text-primary-foreground"
-                onClick={() => setAddOpen(true)}
+                onClick={() => {
+                  if (!canAct) return deny();
+                  resetSiteForm();
+                  setPhotoFile(null);
+                  setClearPhoto(false);
+                  setSiteErrors({});
+                  setEditTarget(null);
+                  setAddOpen(true);
+                }}
               >
                 <Plus className="size-4 mr-1.5" /> Add Site
               </Button>
@@ -7996,9 +8331,10 @@ export function DiveSiteMgmt({
                   filtered.map((s) => (
                     <TableRow key={s.id} className="hover:bg-primary-soft/40">
                       <TableCell>
-                        {s.photo ? (
-                          <img
-                            src={s.photo}
+                        {s.photo || s.photoPath ? (
+                          <SitePhoto
+                            photo={s.photo}
+                            photoPath={s.photoPath}
                             alt={s.name}
                             className="size-9 rounded-lg object-cover"
                           />
@@ -8059,10 +8395,15 @@ export function DiveSiteMgmt({
                         <Button
                           size="sm"
                           variant="ghost"
+                          disabled={!!toggling[s.id]}
                           onClick={() => toggleStatus(s.id)}
                           title="Cycle status"
                         >
-                          <RotateCcw className="size-4" />
+                          {toggling[s.id] ? (
+                            <Loader2 className="size-4 animate-spin" />
+                          ) : (
+                            <RotateCcw className="size-4" />
+                          )}
                         </Button>
                       </TableCell>
                     </TableRow>
@@ -8080,10 +8421,11 @@ export function DiveSiteMgmt({
               </DialogHeader>
               {viewing && (
                 <div className="space-y-4">
-                  {viewing.photo ? (
+                  {viewing.photo || viewing.photoPath ? (
                     <div className="w-full aspect-video rounded-xl overflow-hidden bg-secondary">
-                      <img
-                        src={viewing.photo}
+                      <SitePhoto
+                        photo={viewing.photo}
+                        photoPath={viewing.photoPath}
                         alt={viewing.name}
                         className="w-full h-full object-cover"
                       />
@@ -8136,7 +8478,10 @@ export function DiveSiteMgmt({
                     <Field label="Total Dives" value={String(viewing.dives)} />
                     <Field
                       label="Trend"
-                      value={`+${5 + Math.floor(Math.random() * 10)}%`}
+                      value={
+                        siteTrend(viewing.name) ??
+                        `+${5 + Math.floor(Math.random() * 10)}%`
+                      }
                     />
                   </div>
                   <div className="flex gap-2 pt-2">
@@ -8145,11 +8490,37 @@ export function DiveSiteMgmt({
                       className="flex-1"
                       onClick={() => {
                         setViewing(null);
+                        openEdit(viewing);
+                      }}
+                    >
+                      <Edit3 className="size-4 mr-1.5" /> Edit
+                    </Button>
+                    <Button
+                      variant="outline"
+                      className="flex-1"
+                      disabled={!!toggling[viewing.id]}
+                      onClick={() => {
+                        setViewing(null);
                         toggleStatus(viewing.id);
                       }}
                     >
+                      {toggling[viewing.id] ? (
+                        <Loader2 className="size-4 mr-1.5 animate-spin" />
+                      ) : null}
                       Toggle Status
                     </Button>
+                    {canAdmin && (
+                      <Button
+                        variant="outline"
+                        className="flex-1 border-destructive/30 text-destructive hover:bg-destructive/10"
+                        onClick={() => {
+                          setViewing(null);
+                          attemptDelete(viewing);
+                        }}
+                      >
+                        <Trash2 className="size-4 mr-1.5" /> Delete
+                      </Button>
+                    )}
                     <Button
                       className="flex-1 gradient-primary text-primary-foreground"
                       onClick={() => setViewing(null)}
@@ -8162,17 +8533,19 @@ export function DiveSiteMgmt({
             </DialogContent>
           </Dialog>
 
-          {/* Add Site Dialog */}
+          {/* Add / Edit Site Dialog (shared fields, prefilled in edit mode) */}
           <Dialog
-            open={addOpen}
+            open={addOpen || !!editTarget}
             onOpenChange={(o) => {
-              setAddOpen(o);
-              if (!o) setSiteErrors({});
+              if (!o) closeSiteDialog();
+              else setAddOpen(true);
             }}
           >
             <DialogContent className="max-w-lg">
               <DialogHeader>
-                <DialogTitle>Add Dive Site</DialogTitle>
+                <DialogTitle>
+                  {editTarget ? "Edit Dive Site" : "Add Dive Site"}
+                </DialogTitle>
               </DialogHeader>
               <div className="space-y-4">
                 <input
@@ -8198,6 +8571,8 @@ export function DiveSiteMgmt({
                         onClick={(e) => {
                           e.stopPropagation();
                           setNewSite((s) => ({ ...s, photo: "" }));
+                          setPhotoFile(null);
+                          if (fileRef.current) fileRef.current.value = "";
                         }}
                         className="absolute top-2 right-2 size-7 rounded-full bg-background/80 backdrop-blur-sm flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
                       >
@@ -8219,6 +8594,40 @@ export function DiveSiteMgmt({
                     </div>
                   )}
                 </div>
+                {editTarget &&
+                  !newSite.photo &&
+                  !clearPhoto &&
+                  (editTarget.photo || editTarget.photoPath) && (
+                    <div className="flex items-center gap-3 rounded-xl border border-border/60 bg-secondary/40 px-3 py-2">
+                      <SitePhoto
+                        photo={editTarget.photo}
+                        photoPath={editTarget.photoPath}
+                        alt={editTarget.name}
+                        className="size-10 rounded-lg object-cover"
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs font-medium">Current photo</div>
+                        <div className="text-[11px] text-muted-foreground">
+                          Upload above to replace
+                        </div>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="text-destructive"
+                        onClick={() => setClearPhoto(true)}
+                      >
+                        <X className="size-4 mr-1" /> Remove
+                      </Button>
+                    </div>
+                  )}
+                {clearPhoto && (
+                  <p className="text-xs text-muted-foreground">
+                    Current photo will be removed on save. Upload a new one to
+                    replace it instead.
+                  </p>
+                )}
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-1.5">
                     <Label>
@@ -8366,25 +8775,139 @@ export function DiveSiteMgmt({
                       </p>
                     )}
                   </div>
+                  <div className="space-y-1.5">
+                    <Label>
+                      Latitude <span className="text-destructive">*</span>
+                    </Label>
+                    <Input
+                      value={newSite.lat}
+                      onChange={(e) =>
+                        setNewSite({ ...newSite, lat: e.target.value })
+                      }
+                      placeholder="e.g. 13.7620"
+                      inputMode="decimal"
+                      className={
+                        siteErrors.lat
+                          ? "border-destructive focus-visible:ring-destructive/30"
+                          : ""
+                      }
+                    />
+                    {siteErrors.lat && (
+                      <p className="text-xs text-destructive flex items-center gap-1">
+                        <AlertCircle className="size-3" />
+                        {siteErrors.lat}
+                      </p>
+                    )}
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label>
+                      Longitude <span className="text-destructive">*</span>
+                    </Label>
+                    <Input
+                      value={newSite.lng}
+                      onChange={(e) =>
+                        setNewSite({ ...newSite, lng: e.target.value })
+                      }
+                      placeholder="e.g. 120.9210"
+                      inputMode="decimal"
+                      className={
+                        siteErrors.lng
+                          ? "border-destructive focus-visible:ring-destructive/30"
+                          : ""
+                      }
+                    />
+                    {siteErrors.lng && (
+                      <p className="text-xs text-destructive flex items-center gap-1">
+                        <AlertCircle className="size-3" />
+                        {siteErrors.lng}
+                      </p>
+                    )}
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Description</Label>
+                  <Textarea
+                    value={newSite.description}
+                    onChange={(e) =>
+                      setNewSite({ ...newSite, description: e.target.value })
+                    }
+                    placeholder="Brief site description…"
+                    rows={2}
+                  />
                 </div>
                 <DialogFooter>
-                  <Button
-                    variant="outline"
-                    onClick={() => {
-                      setAddOpen(false);
-                      setSiteErrors({});
-                    }}
-                  >
+                  <Button variant="outline" onClick={closeSiteDialog}>
                     Cancel
                   </Button>
                   <Button
                     className="gradient-primary text-primary-foreground"
-                    onClick={addSite}
+                    disabled={adding}
+                    onClick={editTarget ? saveEdit : addSite}
                   >
-                    <Plus className="size-4 mr-1.5" /> Add Site
+                    {adding ? (
+                      <Loader2 className="size-4 mr-1.5 animate-spin" />
+                    ) : editTarget ? (
+                      <Check className="size-4 mr-1.5" />
+                    ) : (
+                      <Plus className="size-4 mr-1.5" />
+                    )}
+                    {adding
+                      ? editTarget
+                        ? "Saving…"
+                        : "Adding…"
+                      : editTarget
+                        ? "Save Changes"
+                        : "Add Site"}
                   </Button>
                 </DialogFooter>
               </div>
+            </DialogContent>
+          </Dialog>
+
+          {/* Delete confirm (superadmin only; only reachable for sites with
+              zero referencing manifestos — see attemptDelete) */}
+          <Dialog
+            open={!!deleteTarget}
+            onOpenChange={(o) => {
+              if (!o && !deleting) setDeleteTarget(null);
+            }}
+          >
+            <DialogContent className="max-w-md">
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  <Trash2 className="size-5 text-destructive" /> Delete dive
+                  site
+                </DialogTitle>
+                <p className="text-sm text-muted-foreground pt-1">
+                  Permanently delete{" "}
+                  <span className="font-medium text-foreground">
+                    {deleteTarget?.name}
+                  </span>{" "}
+                  ({deleteTarget?.id})? No manifestos reference it. This
+                  cannot be undone.
+                </p>
+              </DialogHeader>
+              <DialogFooter>
+                <Button
+                  variant="outline"
+                  disabled={deleting}
+                  onClick={() => setDeleteTarget(null)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  className="bg-destructive text-destructive-foreground hover:opacity-90"
+                  disabled={deleting}
+                  onClick={doDelete}
+                >
+                  {deleting ? (
+                    <Loader2 className="size-4 mr-1.5 animate-spin" />
+                  ) : (
+                    <Trash2 className="size-4 mr-1.5" />
+                  )}
+                  {deleting ? "Deleting…" : "Delete Permanently"}
+                </Button>
+              </DialogFooter>
             </DialogContent>
           </Dialog>
         </TabsContent>
@@ -8408,7 +8931,7 @@ export function DiveSiteMgmt({
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {scaledTopSites.map((s, i) => (
+                    {siteUsage.map((s, i) => (
                       <TableRow
                         key={s.name}
                         className="cursor-pointer hover:bg-secondary/50 transition-colors"
@@ -8430,7 +8953,7 @@ export function DiveSiteMgmt({
                             <div
                               className="h-full gradient-primary"
                               style={{
-                                width: `${(s.value / scaledTopSites[0].value) * 100}%`,
+                                width: `${((s.value / (siteUsage[0]?.value || 1)) * 100).toFixed(1)}%`,
                               }}
                             />
                           </div>
@@ -8455,12 +8978,12 @@ export function DiveSiteMgmt({
                 { label: "Total dives", value: drillSite.value, icon: Waves },
                 {
                   label: "Rank",
-                  value: `#${topSites.indexOf(topSites.find((s) => s.name === drillSite.name) ?? topSites[0]) + 1}`,
+                  value: `#${siteUsage.findIndex((s) => s.name === drillSite.name) + 1}`,
                   icon: TrendingUp,
                 },
                 {
                   label: "Share",
-                  value: `${((drillSite.value / topSites.reduce((a, s) => a + s.value, 0)) * 100).toFixed(1)}%`,
+                  value: `${((drillSite.value / (siteUsage.reduce((a, s) => a + s.value, 0) || 1)) * 100).toFixed(1)}%`,
                   icon: BarChart3,
                 },
               ]
@@ -8469,7 +8992,7 @@ export function DiveSiteMgmt({
       >
         {drillSite &&
           (() => {
-            const site = diveSites.find((s) => s.name === drillSite.name);
+            const site = sites.find((s) => s.name === drillSite.name);
             return site ? (
               <div className="space-y-4 mt-2">
                 <Card className="p-4 shadow-elegant">
@@ -8529,6 +9052,8 @@ export function DiveSiteMgmt({
                           Unique divers
                         </TableCell>
                         <TableCell className="font-medium">
+                          {/* Estimate: manifest divers carry no tourist link,
+                              so per-site uniqueness can't be counted. */}
                           {Math.round(site.dives * 0.7)}
                         </TableCell>
                       </TableRow>
@@ -8557,9 +9082,9 @@ export function DiveSiteMgmt({
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {manifestos
-                        .filter((m) => m.site === site.name)
-                        .map((m) => (
+                      {(liveManifestsDs.data ?? manifestos)
+                        .filter((m: any) => m.site === site.name)
+                        .map((m: any) => (
                           <TableRow key={m.id}>
                             <TableCell className="font-mono text-xs">
                               {m.id}
@@ -9464,13 +9989,25 @@ function Announcements() {
     return items.filter((i) => i.status === filter);
   }, [items, filter]);
 
+  // Announcements are staff-operable (both tiers); the guard keeps locked
+  // users out consistently across edit/publish/delete entry points.
+  const guardAct = () => {
+    if (!canAct) {
+      deny();
+      return false;
+    }
+    return true;
+  };
+
   const openEdit = (item: any) => {
+    if (!guardAct()) return;
     setEditItem(item);
     setEditDraft({ title: item.title, body: item.body });
     setEditErrors({});
   };
 
   const saveEdit = () => {
+    if (!guardAct()) return;
     const e: Record<string, string> = {};
     if (!editDraft.title.trim()) e.title = "Title is required";
     if (!editDraft.body.trim()) e.body = "Body is required";
@@ -9677,6 +10214,7 @@ function Announcements() {
                       variant="outline"
                       className="border-destructive/30 text-destructive"
                       onClick={() => {
+                        if (!guardAct()) return;
                         setItems(items.filter((x) => x.id !== i.id));
                         toast.success("Announcement deleted");
                       }}
@@ -9688,6 +10226,7 @@ function Announcements() {
                         size="sm"
                         className="ml-auto gradient-primary text-primary-foreground"
                         onClick={() => {
+                          if (!guardAct()) return;
                           setItems(
                             items.map((x) =>
                               x.id === i.id ? { ...x, status: "Published" } : x,
@@ -9707,6 +10246,7 @@ function Announcements() {
                           variant="outline"
                           className="ml-auto"
                           onClick={() => {
+                            if (!guardAct()) return;
                             setItems(
                               items.map((x) =>
                                 x.id === i.id
@@ -9725,6 +10265,7 @@ function Announcements() {
                           size="sm"
                           className="gradient-primary text-primary-foreground"
                           onClick={() => {
+                            if (!guardAct()) return;
                             setItems(
                               items.map((x) =>
                                 x.id === i.id
@@ -9748,11 +10289,12 @@ function Announcements() {
                       <Button
                         size="sm"
                         className="ml-auto gradient-primary text-primary-foreground"
-                        onClick={() =>
+                        onClick={() => {
+                          if (!guardAct()) return;
                           toast.success("Pushed to tourists", {
                             description: i.title,
-                          })
-                        }
+                          });
+                        }}
                       >
                         <Send className="size-4 mr-1" /> Push to Tourists
                       </Button>
@@ -10087,110 +10629,174 @@ function SessionTimeoutSetting() {
 }
 
 function SettingsPage() {
-  const { canAct, canAdmin, deny } = usePermission();
-  const [users, setUsers] = useState([
-    {
-      id: "U-001",
-      name: "Admin Kalua",
-      email: "admin@reef.gov",
-      role: "Admin",
-      status: "Active",
-      lastActive: "2 min ago",
-      actionsToday: 23,
-    },
-    {
-      id: "U-002",
-      name: "Clerk Mendez",
-      email: "clerk@reef.gov",
-      role: "Clerk",
-      status: "Active",
-      lastActive: "1 hour ago",
-      actionsToday: 9,
-    },
-    {
-      id: "U-003",
-      name: "Officer Sato",
-      email: "officer@reef.gov",
-      role: "Officer",
-      status: "Active",
-      lastActive: "Yesterday",
-      actionsToday: 4,
-    },
-    {
-      id: "U-004",
-      name: "Clerk Reyes",
-      email: "clerk2@reef.gov",
-      role: "Clerk",
-      status: "Suspended",
-      lastActive: "3 days ago",
-      actionsToday: 0,
-    },
-  ]);
-  const [userDialog, setUserDialog] = useState<"add" | any>(null);
-  const [userDraft, setUserDraft] = useState({
-    name: "",
+  const { canAdmin, deny } = usePermission();
+  const session = useStaffSessionValue();
+  // Real staff roster from to_staff (superadmin-only read via 034). No mock
+  // fallback here by design: fake staff rows would be worse than an empty
+  // list. Pre-034 databases (no role column) surface as a visible error.
+  const staffLive = useStaffLive();
+  const invalidateStaff = useInvalidateLive();
+  const staffUsers = useMemo(() => staffLive.data ?? [], [staffLive.data]);
+  const [userDialog, setUserDialog] = useState<"invite" | null>(null);
+  const [rowBusy, setRowBusy] = useState<Record<string, boolean>>({});
+  const [inviteForm, setInviteForm] = useState({
+    fullName: "",
     email: "",
-    role: "Clerk",
+    password: "",
+    role: "staff" as "staff" | "superadmin",
   });
-  const [userErrors, setUserErrors] = useState<Record<string, string>>({});
+  const [showInvitePw, setShowInvitePw] = useState(false);
+  const [inviteBusy, setInviteBusy] = useState(false);
+  const [inviteErrors, setInviteErrors] = useState<Record<string, string>>({});
 
-  const addUser = () => {
-    if (!canAct) return deny();
+  const openInvite = () => {
+    setInviteForm({ fullName: "", email: "", password: "", role: "staff" });
+    setInviteErrors({});
+    setShowInvitePw(false);
+    setUserDialog("invite");
+  };
+
+  const submitInvite = async () => {
+    if (!canAdmin) return deny("Only Super Admin can create staff accounts.");
     const e: Record<string, string> = {};
-    if (!userDraft.name.trim()) e.name = "Name is required";
-    if (!userDraft.email.trim()) e.email = "Email is required";
-    else if (!/\S+@\S+\.\S+/.test(userDraft.email)) e.email = "Invalid email";
-    else if (users.some((u) => u.email === userDraft.email))
-      e.email = "Email already exists";
-    setUserErrors(e);
+    if (!inviteForm.fullName.trim()) e.fullName = "Full name is required";
+    if (!inviteForm.email.trim()) e.email = "Email is required";
+    else if (!/\S+@\S+\.\S+/.test(inviteForm.email.trim()))
+      e.email = "Invalid email";
+    if (!inviteForm.password) e.password = "Temporary password is required";
+    else if (inviteForm.password.length < 8)
+      e.password = "At least 8 characters";
+    setInviteErrors(e);
     if (Object.keys(e).length > 0) return;
-    setUsers([
-      ...users,
-      {
-        id: `U-${String(users.length + 1).padStart(3, "0")}`,
-        ...userDraft,
-        name: userDraft.name.trim(),
-        email: userDraft.email.trim(),
-        status: "Active",
-        lastActive: "Just now",
-        actionsToday: 0,
-      },
-    ]);
-    setUserDialog(null);
-    setUserDraft({ name: "", email: "", role: "Clerk" });
-    toast.success("User added", {
-      description: `${userDraft.name} — ${userDraft.role}`,
-    });
+    const accessToken = await getAccessToken();
+    if (!accessToken) {
+      toast.error("Session expired", {
+        description: "Please sign out and sign in again.",
+      });
+      return;
+    }
+    setInviteBusy(true);
+    try {
+      const res = await createStaffAccount({
+        data: {
+          fullName: inviteForm.fullName.trim(),
+          email: inviteForm.email.trim(),
+          password: inviteForm.password,
+          role: inviteForm.role,
+          accessToken,
+        },
+      });
+      if (!res.ok) {
+        const field =
+          res.code === "duplicate" || /email/i.test(res.message)
+            ? "email"
+            : res.code === "weak_password"
+              ? "password"
+              : null;
+        if (field) {
+          setInviteErrors({ [field]: res.message });
+        } else {
+          toast.error("Could not create staff account", {
+            description: res.message,
+          });
+        }
+        return;
+      }
+      pushAuditLog(
+        `Invited staffer ${res.user.email} as ${res.user.role === "superadmin" ? "Super Admin" : "TO Staff"} (${res.status})`
+      );
+      invalidateStaff();
+      setUserDialog(null);
+      if (res.status === "already_staff") {
+        toast.info("Already on the roster", {
+          description: `${res.user.email} is already staff.`,
+        });
+      } else {
+        toast.success(
+          res.status === "linked" ? "Staff account linked" : "Staff account created",
+          {
+            description: `${res.user.email} — share the temporary password out-of-band.`,
+          }
+        );
+      }
+    } catch (err) {
+      toast.error("Could not create staff account", {
+        description: dbErrorMessage(err),
+      });
+    } finally {
+      setInviteBusy(false);
+    }
   };
 
-  const toggleUserStatus = (id: string) => {
-    if (!canAct) return deny();
-    setUsers(
-      users.map((u) =>
-        u.id === id
-          ? { ...u, status: u.status === "Active" ? "Suspended" : "Active" }
-          : u,
-      ),
-    );
-    const u = users.find((x) => x.id === id);
-    toast.success(
-      `User ${u?.status === "Active" ? "suspended" : "activated"}`,
-      { description: u?.name },
-    );
+  const isSelf = (id: string) => !!session?.userId && id === session.userId;
+  const activeSuperadmins = staffUsers.filter(
+    (u) => u.role === "superadmin" && u.isActive
+  ).length;
+
+  const toggleUserStatus = async (id: string) => {
+    if (!canAdmin) return deny("Only Super Admin can manage staff access.");
+    if (!(await requireLiveSession())) return;
+    const u = staffUsers.find((x) => x._dbId === id);
+    if (!u) return;
+    if (isSelf(id) && u.isActive) {
+      toast.error("Action not allowed", {
+        description: "You cannot deactivate your own account.",
+      });
+      return;
+    }
+    setRowBusy((b) => ({ ...b, [id]: true }));
+    try {
+      await setStaffActive(id, !u.isActive);
+      invalidateStaff();
+      pushAuditLog(
+        `${!u.isActive ? "Reactivated" : "Deactivated"} staffer ${u.email}`
+      );
+      toast.success(
+        `Staffer ${!u.isActive ? "reactivated" : "deactivated"}`,
+        { description: u.email }
+      );
+    } catch (e) {
+      toast.error("Could not update staffer", {
+        description: dbErrorMessage(e),
+      });
+    } finally {
+      setRowBusy((b) => ({ ...b, [id]: false }));
+    }
   };
 
-  const deleteUser = (id: string) => {
-    if (!canAct) return deny();
-    const u = users.find((x) => x.id === id);
-    setUsers(users.filter((x) => x.id !== id));
-    toast.success("User removed", { description: u?.name });
-  };
-
-  const setUserRole = (id: string, role: string) => {
+  const setUserRole = async (id: string, role: "staff" | "superadmin") => {
     if (!canAdmin) return deny("Only Super Admin can change user roles.");
-    setUsers(users.map((u) => (u.id === id ? { ...u, role } : u)));
-    const u = users.find((x) => x.id === id);
-    toast.success("Role updated", { description: `${u?.name} is now ${role}` });
+    if (!(await requireLiveSession())) return;
+    const u = staffUsers.find((x) => x._dbId === id);
+    if (!u || u.role === role) return;
+    if (
+      isSelf(id) &&
+      u.role === "superadmin" &&
+      role === "staff" &&
+      activeSuperadmins <= 1
+    ) {
+      toast.error("Action not allowed", {
+        description: "You are the last active superadmin.",
+      });
+      return;
+    }
+    setRowBusy((b) => ({ ...b, [id]: true }));
+    try {
+      await setStaffRole(id, role);
+      invalidateStaff();
+      pushAuditLog(
+        `Changed role for ${u.email} to ${role === "superadmin" ? "Super Admin" : "TO Staff"}`
+      );
+      toast.success("Role updated", {
+        description: `${u.fullName} is now ${role === "superadmin" ? "Super Admin" : "TO Staff"}`,
+      });
+    } catch (e) {
+      toast.error("Could not update role", {
+        description: dbErrorMessage(e),
+      });
+    } finally {
+      setRowBusy((b) => ({ ...b, [id]: false }));
+    }
   };
 
   const [auditQ, setAuditQ] = useState("");
@@ -10199,7 +10805,35 @@ function SettingsPage() {
   const [auditDateFrom, setAuditDateFrom] = useState("");
   const [auditDateTo, setAuditDateTo] = useState("");
 
-  const logs = useLiveAuditLogs();
+  const memLogs = useLiveAuditLogs();
+  const dbLogs = useAuditLogsLive();
+  // Merged trail: session-memory rows (instant) + persisted DB rows.
+  // Dedupe on content — a just-written memory row reappears from the DB
+  // after refetch. Sorted newest-first for stable order.
+  const logs = useMemo(() => {
+    const merged = [...memLogs];
+    const seen = new Set(
+      memLogs.map((l) => `${l.date}|${l.t}|${l.who}|${l.action}`)
+    );
+    for (const l of dbLogs.data ?? []) {
+      const key = `${l.date}|${l.t}|${l.who}|${l.action}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        merged.push(l);
+      }
+    }
+    return merged.sort((a, b) =>
+      a.date !== b.date
+        ? a.date < b.date
+          ? 1
+          : -1
+        : a.t !== b.t
+          ? a.t < b.t
+            ? 1
+            : -1
+          : 0
+    );
+  }, [memLogs, dbLogs.data]);
   const uniqueAuditUsers = useMemo(
     () => [...new Set(logs.map((l) => l.who))].sort(),
     [logs],
@@ -10262,139 +10896,195 @@ function SettingsPage() {
         <div className="flex items-center gap-3">
           <Button
             className="gradient-primary text-primary-foreground"
-            onClick={() => {
-              setUserDialog("add");
-              setUserDraft({ name: "", email: "", role: "Clerk" });
-              setUserErrors({});
-            }}
+            onClick={openInvite}
           >
-            <Plus className="size-4 mr-1.5" /> Add User
+            <Plus className="size-4 mr-1.5" /> Invite Staffer
           </Button>
           <span className="text-xs text-muted-foreground">
-            {users.length} user{users.length !== 1 ? "s" : ""}
+            {staffUsers.length} staffer{staffUsers.length !== 1 ? "s" : ""} ·
+            live from to_staff
           </span>
         </div>
-        <Card className="shadow-elegant overflow-hidden">
-          <Table>
-            <TableHeader>
-              <TableRow className="bg-secondary/50">
-                <TableHead>User</TableHead>
-                <TableHead>Role</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>Last Active</TableHead>
-                <TableHead className="text-right">Actions</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {users.map((u) => (
-                <TableRow key={u.id}>
-                  <TableCell className="flex items-center gap-3 py-3">
-                    <Avatar className="size-9">
-                      <AvatarFallback className="bg-primary text-primary-foreground text-xs">
-                        {u.name
-                          .split(" ")
-                          .map((x) => x[0])
-                          .join("")}
-                      </AvatarFallback>
-                    </Avatar>
-                    <div>
-                      <div className="font-medium">{u.name}</div>
-                      <div className="text-xs text-muted-foreground">
-                        {u.email}
-                      </div>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    {canAdmin ? (
-                      <Select
-                        value={u.role}
-                        onValueChange={(v) => setUserRole(u.id, v)}
-                      >
-                        <SelectTrigger className="h-7 w-[110px] text-xs">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent>
-                          {["Admin", "Officer", "Clerk"].map((r) => (
-                            <SelectItem key={r} value={r} className="text-xs">
-                              {r}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    ) : (
-                      <Badge
-                        variant="outline"
-                        className="border-primary/30 text-primary"
-                      >
-                        {u.role}
-                      </Badge>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    {u.status === "Active" ? (
-                      <Badge className="bg-success/15 text-success border-success/20 text-[10px]">
-                        Active
-                      </Badge>
-                    ) : (
-                      <Badge className="bg-destructive/15 text-destructive border-destructive/20 text-[10px]">
-                        Suspended
-                      </Badge>
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    <div className="flex flex-col gap-0.5">
-                      <span className="text-muted-foreground">
-                        {u.lastActive}
-                      </span>
-                      <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground/70">
-                        <Activity className="size-3" />
-                        {u.actionsToday} action{u.actionsToday === 1 ? "" : "s"}{" "}
-                        today
-                      </span>
-                    </div>
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex justify-end gap-1">
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => toggleUserStatus(u.id)}
-                        title={u.status === "Active" ? "Suspend" : "Activate"}
-                      >
-                        {u.status === "Active" ? (
-                          <XCircle className="size-4 text-destructive" />
-                        ) : (
-                          <CheckCircle2 className="size-4 text-success" />
-                        )}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => deleteUser(u.id)}
-                        title="Remove"
-                      >
-                        <Trash2 className="size-4 text-muted-foreground" />
-                      </Button>
-                    </div>
-                  </TableCell>
+        {staffLive.isError ? (
+          <Card className="p-8 shadow-elegant border-destructive/30 text-center">
+            <ShieldAlert className="size-8 mx-auto text-destructive" />
+            <div className="mt-3 font-medium">Could not load staff roster</div>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {staffLive.error
+                ? dbErrorMessage(staffLive.error)
+                : "Check the Supabase connection and that migration 034 (role column) is applied."}
+            </p>
+            <Button
+              variant="outline"
+              size="sm"
+              className="mt-4"
+              onClick={() => staffLive.refetch()}
+            >
+              <RotateCcw className="size-3.5 mr-1.5" /> Retry
+            </Button>
+          </Card>
+        ) : (
+          <Card className="shadow-elegant overflow-hidden">
+            <Table>
+              <TableHeader>
+                <TableRow className="bg-secondary/50">
+                  <TableHead>Staffer</TableHead>
+                  <TableHead>Role</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Member Since</TableHead>
+                  <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </Card>
+              </TableHeader>
+              <TableBody>
+                {staffLive.isLoading ? (
+                  <TableRow>
+                    <TableCell
+                      colSpan={5}
+                      className="text-center py-8 text-muted-foreground"
+                    >
+                      Loading staff roster…
+                    </TableCell>
+                  </TableRow>
+                ) : staffUsers.length === 0 ? (
+                  <TableRow>
+                    <TableCell
+                      colSpan={5}
+                      className="text-center py-8 text-muted-foreground"
+                    >
+                      No staff rows found.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  staffUsers.map((u) => {
+                    const self = isSelf(u._dbId);
+                    const busy = !!rowBusy[u._dbId];
+                    return (
+                      <TableRow key={u._dbId}>
+                        <TableCell className="flex items-center gap-3 py-3">
+                          <Avatar className="size-9">
+                            <AvatarFallback className="bg-primary text-primary-foreground text-xs">
+                              {staffInitials(u.fullName)}
+                            </AvatarFallback>
+                          </Avatar>
+                          <div>
+                            <div className="font-medium flex items-center gap-2">
+                              {u.fullName}
+                              {self && (
+                                <Badge
+                                  variant="outline"
+                                  className="text-[10px] border-primary/30 text-primary"
+                                >
+                                  You
+                                </Badge>
+                              )}
+                            </div>
+                            <div className="text-xs text-muted-foreground">
+                              {u.email}
+                            </div>
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          {canAdmin ? (
+                            <Select
+                              value={u.role}
+                              disabled={busy}
+                              onValueChange={(v) =>
+                                setUserRole(
+                                  u._dbId,
+                                  v as "staff" | "superadmin"
+                                )
+                              }
+                            >
+                              <SelectTrigger className="h-7 w-[130px] text-xs">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent>
+                                <SelectItem
+                                  value="superadmin"
+                                  className="text-xs"
+                                >
+                                  Super Admin
+                                </SelectItem>
+                                <SelectItem value="staff" className="text-xs">
+                                  TO Staff
+                                </SelectItem>
+                              </SelectContent>
+                            </Select>
+                          ) : (
+                            <Badge
+                              variant="outline"
+                              className="border-primary/30 text-primary"
+                            >
+                              {u.role === "superadmin"
+                                ? "Super Admin"
+                                : "TO Staff"}
+                            </Badge>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          {u.isActive ? (
+                            <Badge className="bg-success/15 text-success border-success/20 text-[10px]">
+                              Active
+                            </Badge>
+                          ) : (
+                            <Badge className="bg-destructive/15 text-destructive border-destructive/20 text-[10px]">
+                              Deactivated
+                            </Badge>
+                          )}
+                        </TableCell>
+                        <TableCell>
+                          <span className="text-muted-foreground">
+                            {u.createdAt}
+                          </span>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-1">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              disabled={busy || self}
+                              title={
+                                self
+                                  ? "You cannot change your own access"
+                                  : u.isActive
+                                    ? "Deactivate"
+                                    : "Reactivate"
+                              }
+                              onClick={() => toggleUserStatus(u._dbId)}
+                            >
+                              {busy ? (
+                                <Loader2 className="size-4 animate-spin" />
+                              ) : u.isActive ? (
+                                <XCircle className="size-4 text-destructive" />
+                              ) : (
+                                <CheckCircle2 className="size-4 text-success" />
+                              )}
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
+                )}
+              </TableBody>
+            </Table>
+          </Card>
+        )}
 
         <Dialog
-          open={!!userDialog}
+          open={userDialog === "invite"}
           onOpenChange={(o) => {
-            if (!o) {
-              setUserDialog(null);
-              setUserErrors({});
-            }
+            if (!o) setUserDialog(null);
           }}
         >
           <DialogContent className="max-w-md">
             <DialogHeader>
-              <DialogTitle>Add user</DialogTitle>
+              <DialogTitle>Invite a staffer</DialogTitle>
+              <p className="text-sm text-muted-foreground pt-1">
+                Creates the auth account (auto-confirmed) and links the
+                staff row in one step. Share the temporary password
+                out-of-band — they should change it after first sign-in.
+              </p>
             </DialogHeader>
             <div className="space-y-4">
               <div className="space-y-1.5">
@@ -10402,21 +11092,21 @@ function SettingsPage() {
                   Full name <span className="text-destructive">*</span>
                 </Label>
                 <Input
-                  value={userDraft.name}
+                  value={inviteForm.fullName}
                   onChange={(e) =>
-                    setUserDraft({ ...userDraft, name: e.target.value })
+                    setInviteForm({ ...inviteForm, fullName: e.target.value })
                   }
                   placeholder="e.g. Juan Dela Cruz"
                   className={
-                    userErrors.name
+                    inviteErrors.fullName
                       ? "border-destructive focus-visible:ring-destructive/30"
                       : ""
                   }
                 />
-                {userErrors.name && (
+                {inviteErrors.fullName && (
                   <p className="text-xs text-destructive flex items-center gap-1">
                     <AlertCircle className="size-3" />
-                    {userErrors.name}
+                    {inviteErrors.fullName}
                   </p>
                 )}
               </div>
@@ -10426,21 +11116,55 @@ function SettingsPage() {
                 </Label>
                 <Input
                   type="email"
-                  value={userDraft.email}
+                  value={inviteForm.email}
                   onChange={(e) =>
-                    setUserDraft({ ...userDraft, email: e.target.value })
+                    setInviteForm({ ...inviteForm, email: e.target.value })
                   }
-                  placeholder="user@reef.gov"
+                  placeholder="staffer@reef.gov"
                   className={
-                    userErrors.email
+                    inviteErrors.email
                       ? "border-destructive focus-visible:ring-destructive/30"
                       : ""
                   }
                 />
-                {userErrors.email && (
+                {inviteErrors.email && (
                   <p className="text-xs text-destructive flex items-center gap-1">
                     <AlertCircle className="size-3" />
-                    {userErrors.email}
+                    {inviteErrors.email}
+                  </p>
+                )}
+              </div>
+              <div className="space-y-1.5">
+                <Label>
+                  Temporary password <span className="text-destructive">*</span>
+                </Label>
+                <div className="relative">
+                  <Input
+                    type={showInvitePw ? "text" : "password"}
+                    value={inviteForm.password}
+                    onChange={(e) =>
+                      setInviteForm({ ...inviteForm, password: e.target.value })
+                    }
+                    placeholder="At least 8 characters"
+                    className={
+                      inviteErrors.password
+                        ? "border-destructive focus-visible:ring-destructive/30 pr-10"
+                        : "pr-10"
+                    }
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowInvitePw((v) => !v)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    title={showInvitePw ? "Hide password" : "Show password"}
+                  >
+                    <Eye className="size-4" />
+                  </button>
+                </div>
+                {inviteErrors.password && (
+                  <p className="text-xs text-destructive flex items-center gap-1">
+                    <AlertCircle className="size-3" />
+                    {inviteErrors.password}
                   </p>
                 )}
               </div>
@@ -10449,36 +11173,42 @@ function SettingsPage() {
                   Role <span className="text-destructive">*</span>
                 </Label>
                 <Select
-                  value={userDraft.role}
-                  onValueChange={(v) => setUserDraft({ ...userDraft, role: v })}
+                  value={inviteForm.role}
+                  onValueChange={(v) =>
+                    setInviteForm({
+                      ...inviteForm,
+                      role: v as "staff" | "superadmin",
+                    })
+                  }
                 >
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {["Admin", "Officer", "Clerk"].map((r) => (
-                      <SelectItem key={r} value={r}>
-                        {r}
-                      </SelectItem>
-                    ))}
+                    <SelectItem value="staff">TO Staff</SelectItem>
+                    <SelectItem value="superadmin">Super Admin</SelectItem>
                   </SelectContent>
                 </Select>
               </div>
               <DialogFooter>
                 <Button
                   variant="outline"
-                  onClick={() => {
-                    setUserDialog(null);
-                    setUserErrors({});
-                  }}
+                  disabled={inviteBusy}
+                  onClick={() => setUserDialog(null)}
                 >
                   Cancel
                 </Button>
                 <Button
                   className="gradient-primary text-primary-foreground"
-                  onClick={addUser}
+                  disabled={inviteBusy}
+                  onClick={submitInvite}
                 >
-                  <Plus className="size-4 mr-1.5" /> Add User
+                  {inviteBusy ? (
+                    <Loader2 className="size-4 mr-1.5 animate-spin" />
+                  ) : (
+                    <Plus className="size-4 mr-1.5" />
+                  )}
+                  {inviteBusy ? "Creating…" : "Create Account"}
                 </Button>
               </DialogFooter>
             </div>
@@ -10594,10 +11324,33 @@ function SettingsPage() {
             <FileDown className="size-4 mr-1.5" /> Export CSV
           </Button>
         </div>
-        <div className="text-xs text-muted-foreground">
-          {filteredLogs.length} of {logs.length} log
-          {logs.length !== 1 ? "s" : ""}
+        <div className="text-xs text-muted-foreground flex items-center gap-2">
+          <span>
+            {filteredLogs.length} of {logs.length} log
+            {logs.length !== 1 ? "s" : ""}
+          </span>
+          {dbLogs.isFetching && (
+            <span className="inline-flex items-center gap-1">
+              <Loader2 className="size-3 animate-spin" /> Syncing…
+            </span>
+          )}
         </div>
+        {dbLogs.isError && (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm flex items-center gap-2">
+            <AlertCircle className="size-4 text-destructive shrink-0" />
+            <span className="flex-1 text-muted-foreground">
+              Could not load persisted entries — showing this session only.
+            </span>
+            <Button
+              size="sm"
+              variant="outline"
+              className="h-7 text-xs"
+              onClick={() => dbLogs.refetch()}
+            >
+              Retry
+            </Button>
+          </div>
+        )}
         <Card className="shadow-elegant overflow-hidden">
           <Table>
             <TableHeader>

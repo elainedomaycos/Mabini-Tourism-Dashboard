@@ -7,6 +7,7 @@ import { Reveal, StatCard } from "@/components/shared";
 import {
   useLiveMode,
   useManifestsLive,
+  useDiveSitesLive,
   bucketByMonth,
 } from "@/lib/queries";
 
@@ -17,11 +18,13 @@ export function DiveOpsPage() {
   const outerTab = isSitesSection ? "sites" : "manifestos";
   const innerTab = currentTab === "analytics" ? "analytics" : "sites";
 
-  // Live manifestos (React Query cache — no extra fetch). Dive-site count
-  // stays mock: no dive-sites table exists yet.
+  // Live manifestos + dive sites (React Query cache — no extra fetch).
   const isLive = useLiveMode();
   const liveManifests = useManifestsLive();
+  const liveSites = useDiveSitesLive();
   const manifests = liveManifests.data;
+  const siteCountLive = isLive && !!liveSites.data;
+  const siteCount = liveSites.data ? liveSites.data.length : 10;
   const isLiveData = isLive && !!manifests;
   const todayISO = new Date().toISOString().slice(0, 10);
   const yesterdayISO = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
@@ -59,7 +62,12 @@ export function DiveOpsPage() {
             }
             up={isLiveData ? monthDiff >= 0 : true}
           />
-          <StatCard icon={MapPin} label="Dive Sites" value="10" delta="" />
+          <StatCard
+            icon={MapPin}
+            label="Dive Sites"
+            value={siteCountLive ? String(siteCount) : "10"}
+            delta=""
+          />
         </div>
       </Reveal>
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">

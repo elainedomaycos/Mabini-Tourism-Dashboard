@@ -7,6 +7,7 @@ import { Reveal, StatCard } from "@/components/shared";
 import {
   useLiveMode,
   useOperatorApplicationsLive,
+  useEstablishmentsLive,
   bucketByMonth,
 } from "@/lib/queries";
 
@@ -20,12 +21,14 @@ export function EstablishmentsPage() {
   const rawTab = search.tab || "applications";
   const outerTab = rawTab === "registered" ? "registered" : "applications";
 
-  // Live application counts (React Query cache — no extra fetch). The
-  // registry cards stay mock: no establishment table exists yet.
+  // Live application + registry counts (React Query cache — no extra fetch).
   const isLive = useLiveMode();
   const liveApps = useOperatorApplicationsLive();
+  const liveEst = useEstablishmentsLive();
   const apps = liveApps.data;
   const isLiveData = isLive && !!apps;
+  const regCountLive = isLive && !!liveEst.data;
+  const regCount = liveEst.data ? liveEst.data.length : 0;
   const pendingCount = apps
     ? apps.filter((a) => a.status === "Pending").length
     : 0;
@@ -37,6 +40,12 @@ export function EstablishmentsPage() {
   const prev = (cur + 11) % 12;
   const monthDiff = buckets.length
     ? buckets[cur].count - buckets[prev].count
+    : 0;
+  const regBuckets = liveEst.data
+    ? bucketByMonth(liveEst.data, (e) => e.createdAt)
+    : [];
+  const regDiff = regBuckets.length
+    ? regBuckets[cur].count - regBuckets[prev].count
     : 0;
 
   return (
@@ -62,10 +71,14 @@ export function EstablishmentsPage() {
               <StatCard
                 icon={Building2}
                 label="Registered Establishments"
-                value="12"
-                delta="+1"
+                value={regCountLive ? String(regCount) : "12"}
+                delta={
+                  regCountLive
+                    ? `${regDiff >= 0 ? "+" : ""}${regDiff}`
+                    : "+1"
+                }
+                up={regCountLive ? regDiff >= 0 : true}
               />
-              {/* NOTE: stays mock until the establishment registry goes live (Phase 4). */}
             </button>
             <button
               type="button"

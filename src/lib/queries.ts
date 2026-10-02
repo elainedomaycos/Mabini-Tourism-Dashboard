@@ -26,6 +26,67 @@ export function useLiveMode(): boolean {
 /** Non-hook equivalent for event handlers / async callbacks. */
 export const isLiveMode = (): boolean => isSupabaseConfigured;
 
+/**
+ * Human-readable message for anything a live write can throw: Error
+ * instances, Supabase PostgREST/storage error objects ({ message, code,
+ * details, hint }), and anything else. A bare `e instanceof Error` check
+ * swallows Supabase rejections into a generic fallback — never use that.
+ */
+export function dbErrorMessage(e: unknown): string {
+  const hintFor = (code: string, text: string): string | null => {
+    // Actionable next steps per Postgres/PostgREST code — learned from real
+    // production drift (missing helpers, grants, columns). The verbatim
+    // message always comes first; the hint only orients the fix.
+    if (code === "42883" || /function .* does not exist/i.test(text)) {
+      return "A database helper is missing — backend migrations may not be fully applied.";
+    }
+    if (/row-level security|row security|policy/i.test(text)) {
+      return "Row-security denial — sign out and back in first; if it persists, an RLS policy or helper is missing.";
+    }
+    if (code === "42501" || /permission denied/i.test(text)) {
+      return "Missing table grant — backend migrations may be incomplete.";
+    }
+    if (code === "23505" || /duplicate key|already exists/i.test(text)) {
+      return "This record already exists.";
+    }
+    if (
+      code === "42703" ||
+      code === "PGRST204" ||
+      /column .* does not exist|could not find/i.test(text)
+    ) {
+      return "Table schema mismatch — backend migrations may be behind.";
+    }
+    if (code === "23514" || /check constraint|violates check/i.test(text)) {
+      return "A value breaks a database rule — check the allowed values.";
+    }
+    return null;
+  };
+  if (e instanceof Error && e.message) {
+    const hint = hintFor((e as any).code ?? "", e.message);
+    return hint ? `${e.message} — ${hint}` : e.message;
+  }
+  if (typeof e === "object" && e !== null) {
+    const o = e as Record<string, unknown>;
+    const parts = [o.message, o.details, o.hint].filter(
+      (p): p is string => typeof p === "string" && p.length > 0
+    );
+    if (parts.length > 0) {
+      const code = typeof o.code === "string" ? o.code : "";
+      const base = parts.join(" — ") + (code ? ` (${code})` : "");
+      const hint = hintFor(code, parts.join(" "));
+      return hint ? `${base} — ${hint}` : base;
+    }
+    try {
+      const json = JSON.stringify(e);
+      if (json && json !== "{}") return json;
+    } catch {
+      /* fall through to generic text */
+    }
+  }
+  if (typeof e === "string" && e) return e;
+  return "Please try again.";
+}
+
 const shortId = (uuid: string) => uuid.replace(/-/g, "").slice(0, 8).toUpperCase();
 const dayOf = (iso: string | null) => (iso ? iso.slice(0, 10) : "—");
 const cap = (s: string) => s.charAt(0).toUpperCase() + s.slice(1).toLowerCase();
@@ -43,7 +104,22 @@ export interface LiveAppRow {
   contact_number: string | null;
   business_permit_url: string | null;
   pcss_url: string | null;
+  website: string | null;
   tourist_id: string;
+}
+
+/** Tourist email + name for graduation writes (establishment owner/contact). */
+export async function getTouristContact(
+  touristId: string
+): Promise<{ email: string | null; fullName: string | null }> {
+  const { data, error } = await supabase
+    .from("tourists")
+    .select("email, full_name")
+    .eq("id", touristId)
+    .maybeSingle();
+  if (error) throw error;
+  if (!data) return { email: null, fullName: null };
+  return { email: data.email ?? null, fullName: data.full_name ?? null };
 }
 
 async function fetchOperatorApplications(): Promise<LiveAppRow[]> {
@@ -76,6 +152,7 @@ async function fetchOperatorApplications(): Promise<LiveAppRow[]> {
     contact_number: a.contact_number ?? null,
     business_permit_url: a.business_permit_url ?? null,
     pcss_url: a.pcss_url ?? null,
+    website: a.website_url ?? null,
     tourist_id: a.tourist_id,
   }));
 }
@@ -490,6 +567,542 @@ export function useInventoryLive() {
   });
 }
 
+/* ------------------------------ DIVE SITES ------------------------------ */
+
+export interface LiveSiteRow {
+  _dbId: string;
+  id: string;
+  siteCode: string;
+  name: string;
+  barangay: string;
+  depthRange: string;
+  difficulty: string;
+  siteType: string;
+  status: "Active" | "Seasonal" | "Restricted";
+  description: string | null;
+  photoUrl: string | null;
+  lat: number;
+  lng: number;
+  dives: number;
+  createdAt: string;
+}
+
+async function fetchDiveSites(): Promise<LiveSiteRow[]> {
+  const { data: sites, error } = await supabase
+    .from("dive_sites")
+    .select("*")
+    .order("name", { ascending: true })
+    .limit(500);
+  if (error) throw error;
+  // Diver counts roll up from manifests matched by location = site name
+  // (the same fuzzy match the drill dialog already uses).
+  const names = [...new Set((sites || []).map((s: any) => s.name))];
+  let diversBySite = new Map<string, number>();
+  if (names.length > 0) {
+    const { data: manifests, error: mErr } = await supabase
+      .from("dive_manifests")
+      .select("id, location")
+      .in("location", names);
+    if (mErr) throw mErr;
+    const mIds = [...new Set((manifests || []).map((m: any) => m.id))];
+    const locById = new Map((manifests || []).map((m: any) => [m.id, m.location]));
+    if (mIds.length > 0) {
+      const { data: divers, error: dErr } = await supabase
+        .from("manifest_divers")
+        .select("manifest_id")
+        .in("manifest_id", mIds);
+      if (dErr) throw dErr;
+      for (const d of divers || []) {
+        const loc = locById.get((d as any).manifest_id);
+        if (loc) diversBySite.set(loc, (diversBySite.get(loc) || 0) + 1);
+      }
+    }
+  }
+  const capStatus = (s: string): LiveSiteRow["status"] => {
+    const v = String(s || "Active").toLowerCase();
+    if (v === "restricted") return "Restricted";
+    if (v === "seasonal") return "Seasonal";
+    return "Active";
+  };
+  return (sites || []).map((s: any) => ({
+    _dbId: s.id,
+    id: s.site_code,
+    siteCode: s.site_code,
+    name: s.name,
+    barangay: s.barangay,
+    depthRange: s.depth_range,
+    difficulty: s.difficulty,
+    siteType: s.site_type,
+    status: capStatus(s.status),
+    description: s.description ?? null,
+    photoUrl: s.photo_url ?? null,
+    lat: Number(s.lat),
+    lng: Number(s.lng),
+    dives: diversBySite.get(s.name) || 0,
+    createdAt: dayOf(s.created_at),
+  }));
+}
+
+export function useDiveSitesLive() {
+  return useQuery({
+    queryKey: ["live", "dive_sites"],
+    queryFn: fetchDiveSites,
+    enabled: isSupabaseConfigured,
+    staleTime: 30_000,
+    retry: 1,
+  });
+}
+
+export interface NewDiveSite {
+  siteCode: string;
+  name: string;
+  barangay: string;
+  depthRange: string;
+  difficulty: string;
+  siteType: string;
+  description?: string;
+  photoUrl?: string | null;
+  lat: number;
+  lng: number;
+}
+
+/** Insert a site. Requires 033 (staff INSERT grant). */
+export async function addDiveSite(site: NewDiveSite): Promise<void> {
+  const { error } = await supabase.from("dive_sites").insert({
+    site_code: site.siteCode,
+    name: site.name,
+    barangay: site.barangay,
+    depth_range: site.depthRange,
+    difficulty: site.difficulty,
+    site_type: site.siteType,
+    description: site.description || null,
+    photo_url: site.photoUrl || null,
+    lat: site.lat,
+    lng: site.lng,
+    status: "Active",
+  });
+  if (error) throw error;
+}
+
+/** Cycle site status. Requires 033 (staff UPDATE grant). */
+export async function setSiteStatus(
+  dbId: string,
+  status: "Active" | "Seasonal" | "Restricted"
+): Promise<void> {
+  const { error } = await supabase
+    .from("dive_sites")
+    .update({ status })
+    .eq("id", dbId);
+  if (error) throw error;
+}
+
+export interface SiteFieldUpdates {
+  name: string;
+  barangay: string;
+  depthRange: string;
+  difficulty: string;
+  siteType: string;
+  description?: string | null;
+  lat: number;
+  lng: number;
+  photoUrl?: string | null;
+}
+
+/** Full field edit. Requires 033 (staff UPDATE grant). */
+export async function updateDiveSite(
+  dbId: string,
+  fields: SiteFieldUpdates
+): Promise<void> {
+  const { error } = await supabase
+    .from("dive_sites")
+    .update({
+      name: fields.name,
+      barangay: fields.barangay,
+      depth_range: fields.depthRange,
+      difficulty: fields.difficulty,
+      site_type: fields.siteType,
+      description: fields.description || null,
+      lat: fields.lat,
+      lng: fields.lng,
+      photo_url: fields.photoUrl || null,
+    })
+    .eq("id", dbId);
+  if (error) throw error;
+}
+
+/**
+ * Hard delete. Superadmin-only via the 033 amendment (no staff DELETE path
+ * exists by design). Manifests reference sites by free-text location, so
+ * nothing cascades — but the UI blocks deleting referenced sites anyway to
+ * keep history linked.
+ */
+export async function deleteDiveSite(dbId: string): Promise<void> {
+  const { error } = await supabase.from("dive_sites").delete().eq("id", dbId);
+  if (error) throw error;
+}
+
+/** How many manifests reference a site location (delete guard). */
+export async function countManifestsByLocation(
+  location: string
+): Promise<number> {
+  const { count, error } = await supabase
+    .from("dive_manifests")
+    .select("id", { count: "exact", head: true })
+    .eq("location", location);
+  if (error) throw error;
+  return count || 0;
+}
+
+/** Signed (1h) URL for a site photo. Staff-only via 033. */
+export async function getSitePhotoUrl(path: string): Promise<string | null> {
+  const { data, error } = await supabase.storage
+    .from("dive-site-photos")
+    .createSignedUrl(path, 3600);
+  if (error || !data?.signedUrl) return null;
+  return data.signedUrl;
+}
+
+/** Upload a site photo. Staff-only via 033. Returns the storage path. */
+export async function uploadSitePhoto(file: File): Promise<string> {
+  const ext = file.name.split(".").pop()?.toLowerCase() || "jpg";
+  const path = `sites/${crypto.randomUUID()}.${ext}`;
+  const { error } = await supabase.storage
+    .from("dive-site-photos")
+    .upload(path, file, { contentType: file.type || `image/${ext}` });
+  if (error) throw error;
+  return path;
+}
+
+/* ------------------------------ ESTABLISHMENTS ------------------------------ */
+
+export interface LiveEstablishmentRow {
+  _dbId: string;
+  id: string;
+  name: string;
+  owner: string;
+  location: string | null;
+  barangay: string;
+  contactEmail: string | null;
+  contactPhone: string | null;
+  status: "Active" | "Suspended";
+  dateRegistered: string;
+  totalManifestos: number;
+  creditBalance: number;
+  website: string | null;
+  facebook: string | null;
+  description: string | null;
+  imageUrl: string | null;
+  createdAt: string;
+}
+
+function barangayOf(location: string | null): string {
+  if (!location) return "—";
+  const m = /barangay\s+([^,]+)/i.exec(location);
+  return m ? m[1].trim() : "—";
+}
+
+async function fetchEstablishments(): Promise<LiveEstablishmentRow[]> {
+  const { data: rows, error } = await supabase
+    .from("establishments")
+    .select("*")
+    .order("created_at", { ascending: false })
+    .limit(200);
+  if (error) throw error;
+  const names = [...new Set((rows || []).map((r: any) => r.name))];
+  // Owner: approved application with matching resort_name → tourist name.
+  // Name-based match is fragile on renames (same caveat as the manifest
+  // operator resolution) — documented, not hidden.
+  let ownerByResort = new Map<string, string>();
+  // totalManifestos: manifest counts grouped by operator name.
+  let manifestsByOperator = new Map<string, number>();
+  // creditBalance: in-use pass value grouped by operator name.
+  let creditByOperator = new Map<string, number>();
+  const [appsRes, manifestsRes, invRes] = await Promise.all([
+    names.length > 0
+      ? supabase
+          .from("operator_applications")
+          .select("resort_name, tourist_id, status")
+          .in("resort_name", names)
+      : Promise.resolve({ data: [], error: null }),
+    supabase.from("dive_manifests").select("id, operator_id"),
+    supabase
+      .from("dive_pass_inventory")
+      .select("operator_id, total_passes, remaining_passes, amount"),
+  ]);
+  if (appsRes.error) throw appsRes.error;
+  if (manifestsRes.error) throw manifestsRes.error;
+  if (invRes.error) throw invRes.error;
+  const touristIds = [
+    ...new Set(
+      ((appsRes.data || []) as any[])
+        .map((a) => a.tourist_id)
+        .filter(Boolean)
+    ),
+  ];
+  const opIds = [
+    ...new Set([
+      ...((manifestsRes.data || []) as any[]).map((m) => m.operator_id),
+      ...((invRes.data || []) as any[]).map((r) => r.operator_id),
+    ]),
+  ].filter(Boolean) as string[];
+  let nameById = new Map<string, string>();
+  const allIds = [...new Set([...touristIds, ...opIds])];
+  if (allIds.length > 0) {
+    const { data: tourists, error: tErr } = await supabase
+      .from("tourists")
+      .select("id, full_name")
+      .in("id", allIds);
+    if (tErr) throw tErr;
+    nameById = new Map((tourists || []).map((t: any) => [t.id, t.full_name]));
+  }
+  for (const a of (appsRes.data || []) as any[]) {
+    if (a.status === "approved" || !ownerByResort.has(a.resort_name)) {
+      ownerByResort.set(
+        a.resort_name,
+        nameById.get(a.tourist_id) || "Unknown owner"
+      );
+    }
+  }
+  // Manifest/credit rollups keyed by operator PERSON id can't join to
+  // resort names directly — resolve each manifest/inventory row's operator
+  // through its approved application instead.
+  const resortByTourist = new Map<string, string>();
+  if (allIds.length > 0) {
+    const { data: allApps, error: aErr } = await supabase
+      .from("operator_applications")
+      .select("tourist_id, resort_name, status")
+      .in("tourist_id", allIds);
+    if (aErr) throw aErr;
+    for (const a of (allApps || []) as any[]) {
+      if (a.status === "approved" || !resortByTourist.has(a.tourist_id)) {
+        resortByTourist.set(a.tourist_id, a.resort_name);
+      }
+    }
+  }
+  for (const m of (manifestsRes.data || []) as any[]) {
+    const resort = resortByTourist.get(m.operator_id);
+    if (resort)
+      manifestsByOperator.set(resort, (manifestsByOperator.get(resort) || 0) + 1);
+  }
+  for (const r of (invRes.data || []) as any[]) {
+    const resort = resortByTourist.get(r.operator_id);
+    if (resort) {
+      const used =
+        (Number(r.total_passes) || 0) - (Number(r.remaining_passes) || 0);
+      const value = used * (Number(r.amount) || 0);
+      creditByOperator.set(resort, (creditByOperator.get(resort) || 0) + value);
+    }
+  }
+  return (rows || []).map((e: any) => ({
+    _dbId: e.id,
+    id: shortId(e.id),
+    name: e.name,
+    owner: ownerByResort.get(e.name) || "Unknown owner",
+    location: e.location ?? null,
+    barangay: barangayOf(e.location ?? null),
+    contactEmail: e.email ?? null,
+    contactPhone: e.phone ?? null,
+    // No status column exists: accredited=false reads Suspended (which also
+    // hides the row from public reads by design of the RLS policy).
+    status: e.accredited === false ? "Suspended" : "Active",
+    dateRegistered: dayOf(e.created_at),
+    totalManifestos: manifestsByOperator.get(e.name) || 0,
+    creditBalance: creditByOperator.get(e.name) || 0,
+    website: e.website ?? null,
+    facebook: e.facebook ?? null,
+    description: e.description ?? null,
+    imageUrl: e.image_url ?? null,
+    createdAt: dayOf(e.created_at),
+  }));
+}
+
+export function useEstablishmentsLive() {
+  return useQuery({
+    queryKey: ["live", "establishments"],
+    queryFn: fetchEstablishments,
+    enabled: isSupabaseConfigured,
+    staleTime: 30_000,
+    retry: 1,
+  });
+}
+
+/**
+ * Suspend/reactivate by flipping `accredited` (035 staff UPDATE). False
+ * doubles as public-read hiding per the RLS policy — intended, not a hack.
+ */
+export async function setEstablishmentSuspended(
+  dbId: string,
+  suspended: boolean
+): Promise<void> {
+  const { error } = await supabase
+    .from("establishments")
+    .update({ accredited: !suspended })
+    .eq("id", dbId);
+  if (error) throw error;
+}
+
+export interface NewEstablishmentFromApp {
+  resortName: string;
+  resortLocation: string | null;
+  contactNumber: string | null;
+  touristEmail: string | null;
+  website?: string | null;
+}
+
+/**
+ * Graduation write: insert the establishment row for an approved
+ * application. Requires 035 (staff INSERT). Partial data by design — permit
+ * fields belong to a future permit-management scope.
+ */
+export async function createEstablishmentFromApplication(
+  app: NewEstablishmentFromApp
+): Promise<void> {
+  const { error } = await supabase.from("establishments").insert({
+    name: app.resortName,
+    location: app.resortLocation,
+    email: app.touristEmail,
+    phone: app.contactNumber,
+    website: app.website || null,
+    accredited: true,
+  });
+  if (error) throw error;
+}
+
+/* ------------------------------ STAFF ROSTER ------------------------------ */
+
+export interface LiveStaffRow {
+  _dbId: string;
+  email: string;
+  fullName: string;
+  role: "staff" | "superadmin";
+  isActive: boolean;
+  createdAt: string;
+}
+
+async function fetchStaff(): Promise<LiveStaffRow[]> {
+  const { data: rows, error } = await supabase
+    .from("to_staff")
+    .select("id, email, full_name, role, is_active, created_at")
+    .order("created_at", { ascending: true })
+    .limit(100);
+  if (error) throw error;
+  return (rows || []).map((s: any) => ({
+    _dbId: s.id,
+    email: s.email,
+    fullName: s.full_name,
+    role: s.role === "superadmin" ? "superadmin" : "staff",
+    isActive: s.is_active !== false,
+    createdAt: dayOf(s.created_at),
+  }));
+}
+
+export function useStaffLive() {
+  return useQuery({
+    queryKey: ["live", "to_staff"],
+    queryFn: fetchStaff,
+    enabled: isSupabaseConfigured,
+    staleTime: 30_000,
+    retry: 1,
+  });
+}
+
+/**
+ * Deactivate/reactivate a staffer. Superadmin-only via 034 — RLS rejects
+ * anything else. No hard delete exists by design (deactivation preserves
+ * history); the UI offers none either.
+ */
+export async function setStaffActive(
+  dbId: string,
+  active: boolean
+): Promise<void> {
+  const { error } = await supabase
+    .from("to_staff")
+    .update({ is_active: active })
+    .eq("id", dbId);
+  if (error) throw error;
+}
+
+/** Promote/demote a staffer. Superadmin-only via 034. */
+export async function setStaffRole(
+  dbId: string,
+  role: "staff" | "superadmin"
+): Promise<void> {
+  const { error } = await supabase
+    .from("to_staff")
+    .update({ role })
+    .eq("id", dbId);
+  if (error) throw error;
+}
+
+/* ------------------------------ AUDIT LOG ------------------------------ */
+
+export interface LiveAuditEntry {
+  date: string;
+  t: string;
+  who: string;
+  action: string;
+}
+
+/**
+ * Persist one audit entry. Fire-and-forget by contract: callers must `void`
+ * the promise — a failed audit (network/RLS) warns to console and never
+ * fails the primary action.
+ */
+export async function logAuditEvent(
+  action: string,
+  entity?: string
+): Promise<void> {
+  try {
+    const {
+      data: { session: s },
+    } = await supabase.auth.getSession();
+    if (!s?.user) return;
+    const { error } = await supabase.from("audit_logs").insert({
+      staff_id: s.user.id,
+      staff_email: s.user.email || "unknown",
+      action,
+      entity: entity || null,
+    });
+    if (error) console.warn("[audit] insert failed:", error.message);
+  } catch (e) {
+    console.warn(
+      "[audit] insert failed:",
+      e instanceof Error ? e.message : e
+    );
+  }
+}
+
+async function fetchAuditLogs(): Promise<LiveAuditEntry[]> {
+  const { data: rows, error } = await supabase
+    .from("audit_logs")
+    .select("action, staff_email, created_at")
+    .order("created_at", { ascending: false })
+    .limit(500);
+  if (error) throw error;
+  return (rows || []).map((r: any) => {
+    const d = r.created_at ? new Date(r.created_at) : null;
+    const valid = d && !Number.isNaN(d.getTime());
+    return {
+      date: valid ? d!.toISOString().slice(0, 10) : "—",
+      t: valid
+        ? d!.toTimeString().slice(0, 5)
+        : "—",
+      who: r.staff_email || "unknown",
+      action: r.action,
+    };
+  });
+}
+
+export function useAuditLogsLive() {
+  return useQuery({
+    queryKey: ["live", "audit_logs"],
+    queryFn: fetchAuditLogs,
+    enabled: isSupabaseConfigured,
+    staleTime: 30_000,
+    retry: 1,
+  });
+}
+
 /* ------------------------------ KPI HELPERS ------------------------------ */
 
 const KPI_MONTHS = [
@@ -630,8 +1243,9 @@ export function bucketByWeek<T>(
  * Realtime refresh for the live tables. Subscribes to postgres_changes on
  * operator_applications + payment_transactions + tourists + dive_manifests
  * (+ manifest_divers, which rolls up into the manifest list) +
- * dive_pass_inventory and invalidates the matching live query so counts,
- * badges and rows update without a manual refetch.
+ * dive_pass_inventory + to_staff + dive_sites + establishments + audit_logs
+ * and invalidates the matching live query so counts, badges and rows
+ * update without a manual refetch.
  *
  * No-op when Supabase isn't configured. Requires each table to be in the
  * `supabase_realtime` publication with staff SELECT (030) — otherwise the
@@ -685,6 +1299,34 @@ export function useLiveRealtime() {
         { event: "*", schema: "public", table: "dive_pass_inventory" },
         () => {
           qc.invalidateQueries({ queryKey: ["live", "dive_pass_inventory"] });
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "to_staff" },
+        () => {
+          qc.invalidateQueries({ queryKey: ["live", "to_staff"] });
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "dive_sites" },
+        () => {
+          qc.invalidateQueries({ queryKey: ["live", "dive_sites"] });
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "establishments" },
+        () => {
+          qc.invalidateQueries({ queryKey: ["live", "establishments"] });
+        }
+      )
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "audit_logs" },
+        () => {
+          qc.invalidateQueries({ queryKey: ["live", "audit_logs"] });
         }
       )
       .subscribe();
