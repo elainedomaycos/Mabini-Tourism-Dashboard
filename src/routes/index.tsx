@@ -35,6 +35,7 @@ import {
   Download,
   Forward,
   Eye,
+  EyeOff,
   Plus,
   Edit3,
   Trash2,
@@ -1494,7 +1495,7 @@ function useRole() {
     return { role, canAct: true, canAdmin: role === "superadmin" };
   }, [session?.role]);
 }
-function usePermission() {
+export function usePermission() {
   const { canAct, canAdmin } = useRole();
   const deny = useCallback(
     (
@@ -1764,6 +1765,7 @@ function Login({ onLogin }: { onLogin: (s: StaffSession) => void }) {
   const [pw, setPw] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showPw, setShowPw] = useState(false);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1876,12 +1878,28 @@ function Login({ onLogin }: { onLogin: (s: StaffSession) => void }) {
                   Forgot?
                 </a>
               </div>
-              <Input
-                id="pw"
-                type="password"
-                value={pw}
-                onChange={(e) => setPw(e.target.value)}
-              />
+              <div className="relative">
+                <Input
+                  id="pw"
+                  type={showPw ? "text" : "password"}
+                  value={pw}
+                  onChange={(e) => setPw(e.target.value)}
+                  className="pr-10"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPw((v) => !v)}
+                  title={showPw ? "Hide password" : "Show password"}
+                  aria-label={showPw ? "Hide password" : "Show password"}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  {showPw ? (
+                    <EyeOff className="size-4" />
+                  ) : (
+                    <Eye className="size-4" />
+                  )}
+                </button>
+              </div>
             </div>
             <label className="flex items-center gap-2 text-sm text-muted-foreground">
               <input
@@ -1976,7 +1994,7 @@ function DashboardShell({
     () => (liveSitesShell.data ?? diveSites).map(toSiteView),
     [liveSitesShell.data]
   );
-  const { role } = useRole();
+  const { role, canAdmin } = useRole();
   const { theme, toggle } = useTheme();
   const section = search.section;
   const dr = useGlobalDateRange();
@@ -1991,7 +2009,16 @@ function DashboardShell({
     () => NAV.filter((n) => role === "superadmin" || n.group !== "System"),
     [role],
   );
-  const current = NAV.find((n) => n.key === section)!;
+  // RBAC: Settings is superadmin-only. The nav filter above hides the entry,
+  // but ?section=settings still renders directly — bounce reviewers to Overview.
+  const isSettingsBlocked = section === "settings" && !canAdmin;
+  const current = NAV.find((n) => n.key === section) ?? NAV[0];
+
+  useEffect(() => {
+    if (isSettingsBlocked) {
+      setFilters({ section: "overview", tab: "" });
+    }
+  }, [isSettingsBlocked, setFilters]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
