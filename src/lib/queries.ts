@@ -1200,6 +1200,80 @@ export function useAuditLogsLive() {
   });
 }
 
+/* ------------------------------ NOTIFICATIONS ------------------------------ */
+
+/**
+ * Staff-facing notification feed behind the header bell. Rows are produced by
+ * the tourist-facing app in the shared Supabase project — the dashboard only
+ * ever reads them and flips the read flag. There is no mock seed: an empty
+ * table means an empty bell, which is the honest state.
+ *
+ * Schema (verified against the live project): id, title, body, type, is_read,
+ * created_at, tourist_id. No recipient column, so `is_read` is global across
+ * the office — one staffer marking a row read clears it for everyone, which
+ * is the intended "someone handled this" semantics for a shared queue.
+ */
+export interface LiveNotificationRow {
+  _dbId: string;
+  title: string;
+  body: string | null;
+  type: string | null;
+  isRead: boolean;
+  createdAt: string;
+  touristId: string | null;
+}
+
+async function fetchNotifications(): Promise<LiveNotificationRow[]> {
+  const { data: rows, error } = await supabase
+    .from("notifications")
+    .select("id, title, body, type, is_read, created_at, tourist_id")
+    .order("created_at", { ascending: false })
+    .limit(50);
+  if (error) throw error;
+  return (rows || []).map((n: any) => ({
+    _dbId: n.id,
+    title: n.title || "Notification",
+    body: n.body ?? null,
+    type: n.type ?? null,
+    isRead: n.is_read !== false,
+    createdAt: n.created_at || "",
+    touristId: n.tourist_id ?? null,
+  }));
+}
+
+export function useNotificationsLive() {
+  return useQuery({
+    queryKey: ["live", "notifications"],
+    queryFn: fetchNotifications,
+    enabled: isSupabaseConfigured,
+    staleTime: 30_000,
+    retry: 1,
+  });
+}
+
+/**
+ * Flips the read flag. Requires migration 039 — the UPDATE policy plus a
+ * column-scoped `grant update (is_read)` that lets staff change read state
+ * without being able to rewrite title/body/type.
+ */
+export async function markNotificationRead(dbId: string): Promise<void> {
+  const { error } = await supabase
+    .from("notifications")
+    .update({ is_read: true })
+    .eq("id", dbId);
+  if (error) throw error;
+}
+
+export async function markAllNotificationsRead(): Promise<void> {
+  // Scope to unread only: rewriting every row would churn the realtime
+  // publication and the audit trail for no benefit.
+  const { error } = await supabase
+    .from("notifications")
+    .update({ is_read: true })
+    .eq("is_read", false);
+  if (error) throw error;
+}
+
 /* ------------------------------ KPI HELPERS ------------------------------ */
 
 const KPI_MONTHS = [
@@ -1435,6 +1509,16 @@ export function useLiveRealtime() {
         { event: "*", schema: "public", table: "audit_logs" },
         () => {
           qc.invalidateQueries({ queryKey: ["live", "audit_logs"] });
+        }
+      )
+      // Keeps the header bell live without a reload. Requires the table in
+      // the supabase_realtime publication (migration 039); without it this
+      // subscription silently never fires.
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "notifications" },
+        () => {
+          qc.invalidateQueries({ queryKey: ["live", "notifications"] });
         }
       )
       .subscribe();

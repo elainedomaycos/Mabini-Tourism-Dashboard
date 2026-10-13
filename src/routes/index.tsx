@@ -1,4 +1,5 @@
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
 import {
   useState,
   useMemo,
@@ -73,6 +74,7 @@ import {
   AlertTriangle,
   BellOff,
   ShieldAlert,
+  TriangleAlert,
   Ban,
 } from "lucide-react";
 import {
@@ -205,6 +207,10 @@ import {
   dbErrorMessage,
   useAuditLogsLive,
   logAuditEvent,
+  useNotificationsLive,
+  markNotificationRead,
+  markAllNotificationsRead,
+  type LiveNotificationRow,
   type MonthBucket,
 } from "@/lib/queries";
 import { ReceiptLightbox } from "@/components/ReceiptLightbox";
@@ -1531,7 +1537,7 @@ function useTheme() {
   return { theme, toggle };
 }
 
-type NotifKind = "receipt" | "application" | "manifesto" | "announcement";
+type NotifKind = "receipt" | "application" | "manifesto" | "announcement" | "generic";
 type Notif = {
   id: string;
   kind: NotifKind;
@@ -1540,72 +1546,114 @@ type Notif = {
   section: string;
   at: string;
   read: boolean;
+  touristId: string | null;
 };
 const NOTIF_ICONS: Record<NotifKind, any> = {
   receipt: Receipt,
   application: Building2,
   manifesto: FileImage,
   announcement: Megaphone,
+  generic: Bell,
 };
 
-// Local-only notification center (in-memory, lost on reload — no
-// notifications table in 030 scope; operators are notified out-of-band).
-const notifStore: { list: Notif[] } = {
-  list: [
-    ...receipts
-      .filter((r) => r.status === "Pending")
-      .map((r) => ({
-        id: `rc-${r.id}`,
-        kind: "receipt" as const,
-        title: `Receipt ${r.id}`,
-        detail: `${r.operator} · ${r.amount}`,
-        section: "receipts",
-        at: r.date,
-        read: false,
-      })),
-    ...operatorApps
-      .filter((a) => a.status === "Pending")
-      .map((a) => ({
-        id: `op-${a.id}`,
-        kind: "application" as const,
-        title: `Application ${a.id}`,
-        detail: a.name,
-        section: "operators",
-        at: a.submitted,
-        read: false,
-      })),
-  ].sort((a, b) => (a.at < b.at ? 1 : -1)),
-};
-const notifListeners = new Set<() => void>();
-function notifyNotifs() {
-  notifListeners.forEach((fn) => fn());
+/**
+ * `type` is written by the tourist-facing app, so its vocabulary is not known
+ * here — map the values this dashboard recognises and fall back to a neutral
+ * bell rather than showing a wrong icon.
+ */
+function notifKindFromType(type: string | null): NotifKind {
+  switch ((type || "").toLowerCase()) {
+    case "receipt":
+    case "payment":
+      return "receipt";
+    case "application":
+    case "operator_application":
+      return "application";
+    case "manifesto":
+    case "manifest":
+    case "dive_manifest":
+      return "manifesto";
+    case "announcement":
+    case "notice":
+      return "announcement";
+    default:
+      return "generic";
+  }
 }
-function pushNotif(n: Omit<Notif, "read">) {
-  notifStore.list = [{ ...n, read: false }, ...notifStore.list];
-  notifyNotifs();
-}
-function markNotifRead(id: string) {
-  notifStore.list = notifStore.list.map((x) =>
-    x.id === id ? { ...x, read: true } : x,
-  );
-  notifyNotifs();
-}
-function markAllNotifsRead() {
-  notifStore.list = notifStore.list.map((x) => ({ ...x, read: true }));
-  notifyNotifs();
-}
+
+/**
+ * Notification feed behind the header bell. Live-only: rows come from the
+ * shared Supabase project and there is deliberately NO mock seed, so an empty
+ * table renders an empty bell rather than invented pending work. Read state
+ * persists via migration 039; the optimistic cache update keeps the badge
+ * responsive and is rolled back if the write fails.
+ */
 function useNotifications() {
-  const [, force] = useState(0);
-  useEffect(() => {
-    const fn = () => force((x) => x + 1);
-    notifListeners.add(fn);
-    return () => {
-      notifListeners.delete(fn);
-    };
-  }, []);
+  const qc = useQueryClient();
+  const query = useNotificationsLive();
+  const rows = query.data;
+
+  const notifs: Notif[] = useMemo(
+    () =>
+      (rows ?? []).map((n) => ({
+        id: n._dbId,
+        kind: notifKindFromType(n.type),
+        title: n.title,
+        detail: n.body ?? "",
+        // No section column upstream, so there is nothing honest to route to.
+        section: "",
+        at: n.createdAt,
+        read: n.isRead,
+        touristId: n.touristId,
+      })),
+    [rows],
+  );
+
+  const unread = notifs.filter((n) => !n.read).length;
+
+  const markNotifRead = async (id: string) => {
+    const previous = qc.getQueryData<LiveNotificationRow[]>([
+      "live",
+      "notifications",
+    ]);
+    // Optimistic: the badge should drop the instant you click.
+    qc.setQueryData<LiveNotificationRow[]>(["live", "notifications"], (old) =>
+      (old ?? []).map((n) => (n._dbId === id ? { ...n, isRead: true } : n)),
+    );
+    try {
+      await markNotificationRead(id);
+    } catch (e) {
+      qc.setQueryData(["live", "notifications"], previous);
+      toast.error("Could not mark as read", { description: dbErrorMessage(e) });
+    }
+  };
+
+  const markAllNotifsRead = async () => {
+    const previous = qc.getQueryData<LiveNotificationRow[]>([
+      "live",
+      "notifications",
+    ]);
+    qc.setQueryData<LiveNotificationRow[]>(["live", "notifications"], (old) =>
+      (old ?? []).map((n) => ({ ...n, isRead: true })),
+    );
+    try {
+      await markAllNotificationsRead();
+    } catch (e) {
+      qc.setQueryData(["live", "notifications"], previous);
+      toast.error("Could not mark all as read", {
+        description: dbErrorMessage(e),
+      });
+    }
+  };
+
   return {
-    notifs: notifStore.list,
-    unread: notifStore.list.filter((n) => !n.read).length,
+    notifs,
+    unread,
+    loading: query.isLoading,
+    error: query.isError,
+    live: isLiveMode(),
+    markNotifRead,
+    markAllNotifsRead,
   };
 }
 
@@ -2558,7 +2606,15 @@ function LiveBadge() {
 }
 
 function NotificationsBell() {
-  const { notifs, unread } = useNotifications();
+  const {
+    notifs,
+    unread,
+    loading,
+    error,
+    live,
+    markNotifRead,
+    markAllNotifsRead,
+  } = useNotifications();
   const { setFilters } = useFilters();
   return (
     <Popover>
@@ -2582,46 +2638,66 @@ function NotificationsBell() {
           <div>
             <div className="text-sm font-semibold">Notifications</div>
             <div className="text-xs text-muted-foreground">
-              {unread} unread · {notifs.length} total
+              {loading
+                ? "Loading…"
+                : `${unread} unread · ${notifs.length} total`}
             </div>
           </div>
           <Button
             size="sm"
             variant="ghost"
             className="h-7 text-xs"
-            onClick={markAllNotifsRead}
+            onClick={() => void markAllNotifsRead()}
             disabled={unread === 0}
           >
             Mark all read
           </Button>
         </div>
         <div className="max-h-80 overflow-y-auto divide-y divide-border/60">
-          {notifs.length === 0 ? (
+          {!live ? (
+            <div className="py-10 text-center text-muted-foreground flex flex-col items-center gap-2">
+              <BellOff className="size-6 opacity-40" />
+              <span className="text-sm">Connect Supabase to see alerts.</span>
+            </div>
+          ) : loading ? (
+            <div className="py-10 flex justify-center">
+              <Loader2 className="size-5 animate-spin text-primary" />
+            </div>
+          ) : error ? (
+            <div className="py-10 px-6 text-center text-muted-foreground flex flex-col items-center gap-2">
+              <TriangleAlert className="size-6 text-destructive" />
+              <span className="text-sm">Could not load notifications.</span>
+            </div>
+          ) : notifs.length === 0 ? (
             <div className="py-10 text-center text-muted-foreground flex flex-col items-center gap-2">
               <BellOff className="size-6 opacity-40" />
               <span className="text-sm">You're all caught up.</span>
             </div>
           ) : (
-            notifs.slice(0, 20).map((n) => {
+            notifs.map((n) => {
               const Icon = NOTIF_ICONS[n.kind];
               return (
                 <button
                   key={n.id}
                   onClick={() => {
-                    setFilters({
-                      section: n.section as any,
-                      q: "",
-                      status: "All",
-                      nationality: "All",
-                      level: "All",
-                      site: "All",
-                      difficulty: "All",
-                      siteType: "All",
-                      dateFrom: "",
-                      dateTo: "",
-                      tab: "",
-                    });
-                    markNotifRead(n.id);
+                    void markNotifRead(n.id);
+                    // No section column upstream, so the only honest target
+                    // is the tourist the alert is about, when it names one.
+                    if (n.touristId) {
+                      setFilters({
+                        section: "tourists",
+                        q: n.touristId,
+                        status: "All",
+                        nationality: "All",
+                        level: "All",
+                        site: "All",
+                        difficulty: "All",
+                        siteType: "All",
+                        dateFrom: "",
+                        dateTo: "",
+                        tab: "",
+                      });
+                    }
                   }}
                   className={`w-full flex items-start gap-3 px-4 py-3 text-left transition-colors hover:bg-primary-soft/40 ${n.read ? "opacity-60" : ""}`}
                 >
@@ -2639,11 +2715,13 @@ function NotificationsBell() {
                         <span className="size-2 rounded-full bg-primary shrink-0" />
                       )}
                     </div>
-                    <div className="text-xs text-muted-foreground truncate">
-                      {n.detail}
-                    </div>
+                    {n.detail && (
+                      <div className="text-xs text-muted-foreground truncate">
+                        {n.detail}
+                      </div>
+                    )}
                     <div className="text-[10px] text-muted-foreground/70 mt-0.5">
-                      {n.at}
+                      {n.at ? n.at : "Just now"}
                     </div>
                   </div>
                 </button>
@@ -2652,9 +2730,11 @@ function NotificationsBell() {
           )}
         </div>
         <div className="px-4 py-2.5 border-t border-border text-[11px] text-muted-foreground">
-          {unread > 0
-            ? `${unread} item${unread > 1 ? "s" : ""} need${unread === 1 ? "s" : ""} your attention — pending receipts & new applications.`
-            : "All notifications are up to date."}
+          {!live
+            ? "Notifications sync from the shared database."
+            : unread > 0
+              ? `${unread} item${unread > 1 ? "s" : ""} need${unread === 1 ? "s" : ""} your attention.`
+              : "All notifications are up to date."}
         </div>
       </PopoverContent>
     </Popover>
@@ -5577,14 +5657,6 @@ export function OperatorMgmt() {
             : `Rejected operator ${id} — ${reason}`
         );
         if (decision === "Approved") {
-          pushNotif({
-            id: `na-${id}`,
-            kind: "application",
-            title: `Application ${id} approved`,
-            detail: `${id} is now an active operator.`,
-            section: "operators",
-            at: "Just now",
-          });
           void runGraduations([liveRow], false);
         }
       } catch (e) {
@@ -5631,16 +5703,6 @@ export function OperatorMgmt() {
         ? `Approved operator ${id}`
         : `Rejected operator ${id} — ${reason}`,
     );
-    if (decision === "Approved") {
-      pushNotif({
-        id: `na-${id}`,
-        kind: "application",
-        title: `Application ${id} approved`,
-        detail: `${id} is now an active operator.`,
-        section: "operators",
-        at: "Just now",
-      });
-    }
   };
 
   const pendingCount = apps.filter((a) => a.status === "Pending").length;
@@ -5773,16 +5835,6 @@ export function OperatorMgmt() {
       succeeded.forEach((id) => pushAuditLog(`Rejected operator ${id} — ${reason}`));
     } else {
       succeeded.forEach((id) => pushAuditLog(`Approved operator ${id}`));
-      succeeded.forEach((id) =>
-        pushNotif({
-          id: `na-${id}`,
-          kind: "application",
-          title: `Application ${id} approved`,
-          detail: `${id} is now an active operator.`,
-          section: "operators",
-          at: "Just now",
-        }),
-      );
       if (isLive && liveApps.data) {
         const snapshot = liveApps.data;
         const rows = succeeded
@@ -6324,16 +6376,6 @@ export function ReceiptVerification() {
             ? `Verified receipt ${id}`
             : `Rejected receipt ${id} — ${reason}`
         );
-        if (decision === "Verified") {
-          pushNotif({
-            id: `nc-${id}`,
-            kind: "receipt",
-            title: `Receipt ${id} verified`,
-            detail: `${target?.operator} · ${target?.amount} was approved.`,
-            section: "receipts",
-            at: "Just now",
-          });
-        }
       } catch (e) {
         toast.error("Could not save decision", {
           description: dbErrorMessage(e),
@@ -6372,16 +6414,6 @@ export function ReceiptVerification() {
         ? `Verified receipt ${id}`
         : `Rejected receipt ${id} — ${reason}`,
     );
-    if (decision === "Verified") {
-      pushNotif({
-        id: `nc-${id}`,
-        kind: "receipt",
-        title: `Receipt ${id} verified`,
-        detail: `${target?.operator} · ${target?.amount} was approved.`,
-        section: "receipts",
-        at: "Just now",
-      });
-    }
   };
 
   const selectablePending = filtered.filter((r) => r.status === "Pending");
@@ -6514,16 +6546,6 @@ export function ReceiptVerification() {
       succeeded.forEach((id) => pushAuditLog(`Rejected receipt ${id} — ${reason}`));
     } else {
       succeeded.forEach((id) => pushAuditLog(`Verified receipt ${id}`));
-      succeeded.forEach((id) =>
-        pushNotif({
-          id: `nc-${id}`,
-          kind: "receipt",
-          title: `Receipt ${id} verified`,
-          detail: `${id} was approved in bulk.`,
-          section: "receipts",
-          at: "Just now",
-        }),
-      );
     }
   };
 
@@ -10215,14 +10237,6 @@ function Announcements() {
         ? `Scheduled announcement #A-${Date.now() % 1000}`
         : `Pushed announcement #A-${Date.now() % 1000}`,
     );
-    pushNotif({
-      id: `n-ann-${Date.now()}`,
-      kind: "announcement",
-      title: scheduled ? "Announcement scheduled" : "Announcement published",
-      detail: `${draft.title.trim()} — ${scheduled ? `sending ${draft.schedule} at ${draft.scheduleTime}` : "sent to targeted audience"}.`,
-      section: "announcements",
-      at: "Just now",
-    });
   };
 
   const toggleChip = (key: "nat" | "ops" | "lvls", val: string) =>
