@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import {
   CreditCard,
   TrendingUp,
@@ -25,6 +26,8 @@ import {
   useInventoryLive,
   bucketByMonth,
 } from "@/lib/queries";
+import { InsightWidget } from "@/components/InsightWidget";
+import { buildDivePassInsight } from "@/lib/insights";
 import {
   ResponsiveContainer,
   PieChart,
@@ -149,8 +152,36 @@ export function DivePassAnalytics() {
   const useDiff = useBuckets.length
     ? (useBuckets[curMonth]?.total ?? 0) - (useBuckets[prevMonth]?.total ?? 0)
     : 0;
+
+  // Facts for the floating insights widget — same live values as the cards.
+  const passInsight = useMemo(() => {
+    const rows = receipts ?? [];
+    const inventory = inv ?? [];
+    const remaining = inventory.reduce((a, r) => a + (r.remainingPasses || 0), 0);
+    const pending = rows.filter((r) => r.status === "Pending");
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    const oldest = pending.reduce((max, r) => {
+      const d = new Date((r.date || "") + "T00:00:00");
+      if (Number.isNaN(d.getTime())) return max;
+      return Math.max(max, (now.getTime() - d.getTime()) / 86400000);
+    }, 0);
+
+    return buildDivePassInsight({
+      live: isLiveData,
+      revenue: revenueTotal,
+      revenueDelta: revDiff,
+      passesSold: inUse,
+      passesRemaining: remaining,
+      pendingReceipts: pending.length,
+      oldestPendingDays: Math.round(oldest),
+      seed: now.getDate(),
+    });
+  }, [receipts, inv, isLiveData, revenueTotal, inUse, revDiff]);
+
   return (
     <div className="space-y-6">
+      <InsightWidget insight={passInsight} label="Dive Pass" />
       <Reveal>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <StatCard

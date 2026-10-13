@@ -224,6 +224,8 @@ import { EstablishmentAnalytics } from "@/components/sections/EstablishmentAnaly
 import { EstablishmentsPage } from "@/components/sections/EstablishmentsPage";
 import { DiveOpsPage } from "@/components/sections/DiveOpsPage";
 import { DivePassPage, PassPricingEditor } from "@/components/sections/DivePassPage";
+import { InsightWidget } from "@/components/InsightWidget";
+import { buildOverviewInsight, buildOperatorInsight } from "@/lib/insights";
 import { AnalyticsPage } from "@/components/sections/AnalyticsPage";
 
 /* ------------------------------ SEARCH PARAMS SCHEMA ------------------------------ */
@@ -3105,8 +3107,116 @@ function Overview({ session }: { session?: StaffSession | null }) {
     () => trendData.reduce((a, m) => a + m.dives, 0),
     [trendData]
   );
+
+  // Hoisted out of the facts memo: momDiff/monthRevenueOf are redefined every
+  // render, so depending on them would defeat the memo entirely. Resolving
+  // them here keeps the memo keyed on the underlying data instead.
+  const insightTouristDelta = ovLive
+    ? momDiff(touristBuckets, (b) => b.count).diff
+    : 47;
+  const insightRevenue = ovLive
+    ? receiptBuckets[monthIdxNow]?.total ?? 0
+    : 0;
+  const insightRevenuePrev = ovLive
+    ? receiptBuckets[monthIdxPrev]?.total ?? 0
+    : 0;
+
+  // Facts for the floating insights widget (src/lib/insights.ts). Derived from
+  // the same values feeding the StatCards so the prose can never contradict
+  // the numbers beside it — no extra queries, no second source of truth.
+  const insightFacts = useMemo(() => {
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    const ageInDays = (value: string | null | undefined) => {
+      if (!value) return 0;
+      const d = new Date(value + "T00:00:00");
+      if (Number.isNaN(d.getTime())) return 0;
+      return Math.max(0, (now.getTime() - d.getTime()) / 86400000);
+    };
+    const pendingReceipts = ovReceipts.filter(
+      (r: any) => r.status === "Pending",
+    );
+    const pendingApps = ovApps.filter((a: any) => a.status === "Pending");
+    const oldestReceipt = pendingReceipts.reduce(
+      (max, r: any) => Math.max(max, ageInDays(r.date)),
+      0,
+    );
+    const oldestApp = pendingApps.reduce(
+      (max, a: any) => Math.max(max, ageInDays(a.submitted)),
+      0,
+    );
+    const expiringPasses = ovTourists.filter((t: any) => {
+      if (t.status !== "Active" || !t.expires || t.expires === "—") return false;
+      const exp = new Date(t.expires + "T00:00:00");
+      if (Number.isNaN(exp.getTime())) return false;
+      const diff = (exp.getTime() - now.getTime()) / 86400000;
+      return diff > 0 && diff <= 30;
+    }).length;
+    const topSiteRow = scaledTopSites[0];
+    const diveTypeCounts = new Map<string, number>();
+    for (const m of ovManifests as any[]) {
+      const t = m.diveType;
+      if (t) diveTypeCounts.set(t, (diveTypeCounts.get(t) || 0) + 1);
+    }
+    const topType = [...diveTypeCounts.entries()].sort((a, b) => b[1] - a[1])[0];
+    const totalTyped = [...diveTypeCounts.values()].reduce((a, c) => a + c, 0);
+
+    return {
+      live: ovLive,
+      tourists: ovLive ? ovTourists.length : 810,
+      activeIds: ovLive
+        ? ovTourists.filter((t: any) => t.status === "Active").length
+        : 358,
+      touristDelta: insightTouristDelta,
+      todayDives: todayDivers,
+      dayDelta: todayDivers - yesterdayDivers,
+      monthRevenue: insightRevenue,
+      revenueDelta: insightRevenue - insightRevenuePrev,
+      pendingReceipts: pendingReceipts.length,
+      oldestPendingReceiptDays: Math.round(oldestReceipt),
+      pendingApplications: pendingApps.length,
+      oldestPendingAppDays: Math.round(oldestApp),
+      expiringPasses,
+      topSite: topSiteRow?.name ?? null,
+      topSiteShare:
+        topSiteRow && liveTotalDivers > 0
+          ? (topSiteRow.value / liveTotalDivers) * 100
+          : 0,
+      topDiveType: topType?.[0] ?? null,
+      topDiveTypeShare: topType && totalTyped > 0 ? (topType[1] / totalTyped) * 100 : 0,
+      activeSites: ovLive
+        ? ovSites.filter((s: any) => s.status === "Active").length
+        : 12,
+      // Deterministic per-day variant rotation (no randomness → reproducible).
+      seed: now.getDate(),
+    };
+  }, [
+    ovLive,
+    ovTourists,
+    ovReceipts,
+    ovApps,
+    ovManifests,
+    ovSites,
+    todayDivers,
+    yesterdayDivers,
+    // Revenue/delta are resolved above (see insightRevenue etc.) because the
+    // monthRevenueOf/momDiff helpers are redefined every render; listing them
+    // as deps would defeat the memo, and omitting them would go stale.
+    insightTouristDelta,
+    insightRevenue,
+    insightRevenuePrev,
+    scaledTopSites,
+    liveTotalDivers,
+  ]);
+
+  const overviewInsight = useMemo(
+    () => buildOverviewInsight(insightFacts),
+    [insightFacts]
+  );
+
   return (
     <div className="space-y-6">
+      <InsightWidget insight={overviewInsight} label="Overview" />
       {/* Hero banner */}
       <Reveal>
         <div className="relative overflow-hidden rounded-2xl gradient-primary text-primary-foreground p-6 md:p-8 shadow-glow">
@@ -9357,8 +9467,44 @@ export function OperatorAnalytics() {
     }));
   }, [liveOperatorRows, scale]);
 
+  const operatorInsight = useMemo(() => {
+    const rows = liveOperatorRows ?? [];
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    const totalManifestos = rows.reduce((a, r) => a + r.manifestos, 0);
+    const withManifests = rows.filter((r) => r.manifestos > 0);
+    // Inventory names every accredited operator; anything absent from the
+    // manifest set filed nothing this period.
+    const allNames = new Set<string>();
+    for (const r of rows) allNames.add(r.name);
+    for (const inv of liveInventoryOp.data ?? []) allNames.add(inv.operator);
+    for (const m of liveManifestsOp.data ?? []) allNames.add(m.operator);
+    const idle = [...allNames].filter(
+      (n) => !withManifests.some((r) => r.name === n),
+    ).length;
+    const exhausted = rows.filter(
+      (r) => r.purchased > 0 && r.remaining <= 0,
+    ).length;
+    const top = withManifests[0];
+
+    return buildOperatorInsight({
+      live: !!liveOperatorRows,
+      operatorsWithManifests: withManifests.length,
+      idleOperators: idle,
+      topOperator: top?.name ?? null,
+      topOperatorShare:
+        top && totalManifestos > 0
+          ? (top.manifestos / totalManifestos) * 100
+          : 0,
+      exhaustedOperators: exhausted,
+      seed: now.getDate(),
+    });
+  }, [liveOperatorRows, liveInventoryOp.data, liveManifestsOp.data]);
+
   return (
-    <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+    <div className="relative">
+      <InsightWidget insight={operatorInsight} label="Operators" />
+      <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
       <SectionCard title="Most Active Operators">
         <div className="h-80">
           <ResponsiveContainer>
@@ -9656,6 +9802,7 @@ export function OperatorAnalytics() {
           </div>
         )}
       </DrilldownDialog>
+      </div>
     </div>
   );
 }

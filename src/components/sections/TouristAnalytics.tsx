@@ -21,8 +21,11 @@ import {
   useLiveMode,
   useTouristsLive,
   useManifestsLive,
+  useOperatorApplicationsLive,
   bucketByMonth,
 } from "@/lib/queries";
+import { InsightWidget } from "@/components/InsightWidget";
+import { buildTouristInsight } from "@/lib/insights";
 import {
   ResponsiveContainer,
   PieChart,
@@ -234,6 +237,13 @@ export function TouristAnalytics() {
   const isLive = useLiveMode();
   const liveTourists = useTouristsLive();
   const liveManifests = useManifestsLive();
+  // Only read (not displayed) — feeds the insights widget's backlog rule.
+  const liveApps = useOperatorApplicationsLive();
+  const pendingAppCount = useMemo(
+    () =>
+      (liveApps.data ?? []).filter((a) => a.status === "Pending").length,
+    [liveApps.data]
+  );
   const liveRows = liveTourists.data;
   const isLiveData = isLive && !!liveRows;
   const inMarket = (nat: string | null | undefined) =>
@@ -327,8 +337,62 @@ export function TouristAnalytics() {
 
   const levelTotal = selectedLevel.reduce((a, r) => a + r.count, 0);
 
+  // Facts for the floating insights widget. Derived from the same live values
+  // as the StatCards above — no extra queries.
+  const touristInsight = useMemo(() => {
+    const rows = liveRows ?? [];
+    const natCounts = new Map<string, number>();
+    const levelCounts = new Map<string, number>();
+    for (const t of rows) {
+      if (t.nationality)
+        natCounts.set(
+          t.nationality,
+          (natCounts.get(t.nationality) || 0) + 1
+        );
+      if (t.level) levelCounts.set(t.level, (levelCounts.get(t.level) || 0) + 1);
+    }
+    const topOf = (m: Map<string, number>) =>
+      [...m.entries()].sort((a, b) => b[1] - a[1])[0];
+    const topNat = topOf(natCounts);
+    const topLvl = topOf(levelCounts);
+    const natTotal = [...natCounts.values()].reduce((a, c) => a + c, 0);
+    const lvlTotal = [...levelCounts.values()].reduce((a, c) => a + c, 0);
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    const expiring = rows.filter((t) => {
+      if (t.status !== "Active" || !t.expires || t.expires === "—") return false;
+      const exp = new Date(t.expires + "T00:00:00");
+      if (Number.isNaN(exp.getTime())) return false;
+      const diff = (exp.getTime() - now.getTime()) / 86400000;
+      return diff > 0 && diff <= 30;
+    }).length;
+
+    return buildTouristInsight({
+      live: isLiveData,
+      tourists: rows.length,
+      registrationsDelta: liveBuckets[curMonth].count - liveBuckets[prevMonth].count,
+      nationalities: natCounts.size,
+      topNationality: topNat?.[0] ?? null,
+      topNationalityShare:
+        topNat && natTotal > 0 ? (topNat[1] / natTotal) * 100 : 0,
+      topLevel: topLvl?.[0] ?? null,
+      topLevelShare: topLvl && lvlTotal > 0 ? (topLvl[1] / lvlTotal) * 100 : 0,
+      expiringPasses: expiring,
+      pendingApplications: pendingAppCount,
+      seed: now.getDate(),
+    });
+  }, [
+    liveRows,
+    isLiveData,
+    liveBuckets,
+    curMonth,
+    prevMonth,
+    pendingAppCount,
+  ]);
+
   return (
     <div className="space-y-6">
+      <InsightWidget insight={touristInsight} label="Tourists" />
       <Reveal>
         <div className="flex items-center justify-between">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 flex-1">

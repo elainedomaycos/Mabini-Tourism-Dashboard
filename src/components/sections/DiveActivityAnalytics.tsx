@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import { Waves, TrendingUp, Clock, BarChart3, Download } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -39,6 +39,8 @@ import {
   useManifestsLive,
   bucketByMonth,
 } from "@/lib/queries";
+import { InsightWidget } from "@/components/InsightWidget";
+import { buildDiveActivityInsight } from "@/lib/insights";
 
 const diveType = [
   { name: "Reef", value: 62 },
@@ -175,8 +177,36 @@ export function DiveActivityAnalytics() {
         .sort((a, b) => b.dives - a.dives)
     : [];
 
+  const activityInsight = useMemo(() => {
+    const rows = manifests ?? [];
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    // Unverified in the trailing 30 days — recent and unverified is the case
+    // that actually matters for compliance.
+    const cutoff = now.getTime() - 30 * 86400000;
+    const unverified = rows.filter((m) => {
+      if (m.verified) return false;
+      const d = new Date((m.date || "") + "T00:00:00");
+      if (Number.isNaN(d.getTime())) return false;
+      return d.getTime() >= cutoff;
+    }).length;
+    const sites = new Set(rows.map((m) => m.site).filter(Boolean));
+
+    return buildDiveActivityInsight({
+      live: isLiveData,
+      totalDives: totalDivers,
+      divesDelta: diversDiff,
+      topType: topType?.name ?? null,
+      topTypeShare: topType?.share ?? 0,
+      unverifiedManifests: unverified,
+      sitesUsed: sites.size,
+      seed: now.getDate(),
+    });
+  }, [manifests, isLiveData, totalDivers, diversDiff, topType]);
+
   return (
     <div className="space-y-6">
+      <InsightWidget insight={activityInsight} label="Dive Activity" />
       <Reveal>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
             <StatCard
