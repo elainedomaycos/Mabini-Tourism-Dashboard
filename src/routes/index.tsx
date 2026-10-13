@@ -217,7 +217,7 @@ import { DivePassAnalytics } from "@/components/sections/DivePassAnalytics";
 import { EstablishmentAnalytics } from "@/components/sections/EstablishmentAnalytics";
 import { EstablishmentsPage } from "@/components/sections/EstablishmentsPage";
 import { DiveOpsPage } from "@/components/sections/DiveOpsPage";
-import { DivePassPage } from "@/components/sections/DivePassPage";
+import { DivePassPage, PassPricingEditor } from "@/components/sections/DivePassPage";
 import { AnalyticsPage } from "@/components/sections/AnalyticsPage";
 
 /* ------------------------------ SEARCH PARAMS SCHEMA ------------------------------ */
@@ -6587,6 +6587,7 @@ export function ReceiptVerification() {
               className="w-40"
             />
           </div>
+          <PassPricingEditor />
           {activeFilters.length > 0 && (
             <Button
               variant="ghost"

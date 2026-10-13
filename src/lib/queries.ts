@@ -567,6 +567,101 @@ export function useInventoryLive() {
   });
 }
 
+/* ------------------------------ PASS PRICING ------------------------------ */
+
+/**
+ * Authoritative price list. This table is the single source of truth for
+ * what a dive pass costs: the dashboard writes it from Dive Pass → Pass
+ * Pricing, and the tourist-facing app reads the same rows from the same
+ * Supabase project, so a committed edit is the whole propagation step —
+ * there is no sync job or webhook on either side. Anything already sold
+ * (dive_pass_inventory.amount) is left untouched, keeping past revenue
+ * figures honest.
+ */
+export interface LivePriceRow {
+  _dbId: string;
+  code: string | null;
+  label: string;
+  passes: number;
+  price: number;
+  description: string | null;
+  sortOrder: number;
+}
+
+async function fetchPassPricing(): Promise<LivePriceRow[]> {
+  const { data: rows, error } = await supabase
+    .from("pass_pricing")
+    .select("id, code, label, passes, price, description, sort_order")
+    .order("sort_order", { ascending: true })
+    .limit(50);
+  if (error) throw error;
+  return (rows || []).map((p: any) => ({
+    _dbId: p.id,
+    code: p.code ?? null,
+    label: p.label || "Dive Pass",
+    passes: Number(p.passes) || 1,
+    price: Number(p.price) || 0,
+    description: p.description ?? null,
+    sortOrder: Number(p.sort_order) || 0,
+  }));
+}
+
+export function usePassPricingLive() {
+  return useQuery({
+    queryKey: ["live", "pass_pricing"],
+    queryFn: fetchPassPricing,
+    enabled: isSupabaseConfigured,
+    staleTime: 30_000,
+    retry: 1,
+  });
+}
+
+/** Upper bound for an editable price — generous headroom over today's rates. */
+export const MAX_PASS_PRICE = 1_000_000;
+
+/**
+ * Client-side validation, applied before any network call so a typo never
+ * reaches the database. Returns an error message, or null when acceptable.
+ * Prices are pesos with at most two decimal places.
+ */
+export function validatePassPrice(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return "Enter a price.";
+  if (!/^\d*\.?\d{1,2}$/.test(trimmed)) {
+    return "Use a number with up to 2 decimal places.";
+  }
+  const value = Number(trimmed);
+  if (!Number.isFinite(value)) return "Enter a valid number.";
+  if (value <= 0) return "Price must be greater than zero.";
+  if (value > MAX_PASS_PRICE) {
+    return `Price must not exceed ₱${MAX_PASS_PRICE.toLocaleString("en-PH")}.`;
+  }
+  return null;
+}
+
+/**
+ * Persists a new price for one pass_pricing row. Superadmin-only via 034
+ * (RLS rejects anyone else); the caller maps that error to a denial message.
+ */
+export async function updatePassPrice(
+  dbId: string,
+  price: number
+): Promise<void> {
+  const { error } = await supabase
+    .from("pass_pricing")
+    .update({ price })
+    .eq("id", dbId);
+  if (error) throw error;
+}
+
+/** Peso formatting for display (e.g. ₱1,500 / ₱1,500.50). */
+export function formatPeso(value: number): string {
+  return `₱${value.toLocaleString("en-PH", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
 /* ------------------------------ DIVE SITES ------------------------------ */
 
 export interface LiveSiteRow {
@@ -1301,6 +1396,17 @@ export function useLiveRealtime() {
         { event: "*", schema: "public", table: "dive_pass_inventory" },
         () => {
           qc.invalidateQueries({ queryKey: ["live", "dive_pass_inventory"] });
+        }
+      )
+      // Price edits made here are read by the tourist app, so keep every
+      // dashboard tab honest about the current list. Requires pass_pricing in
+      // the supabase_realtime publication (the dashboard still works without
+      // it — this only drives cross-client push, not the refetch on mount).
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "pass_pricing" },
+        () => {
+          qc.invalidateQueries({ queryKey: ["live", "pass_pricing"] });
         }
       )
       .on(
