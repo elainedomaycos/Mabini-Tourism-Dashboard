@@ -76,6 +76,7 @@ import {
   ShieldAlert,
   TriangleAlert,
   Ban,
+  Fingerprint,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -1905,24 +1906,24 @@ function Login({ onLogin }: { onLogin: (s: StaffSession) => void }) {
         </div>
         <div className="relative space-y-6 max-w-md">
           <h1 className="text-5xl font-display font-bold leading-[1.05]">
-            Dive tourism, orchestrated.
+            Smarter tourism. Sustainable seas.
           </h1>
           <p className="text-primary-foreground/85 text-lg">
-            Manage tourists, operators, receipts and dive manifestos from a
-            single, calm command center.
+            A unified platform for managing dive tourism, identifying visitors,
+            and supporting sustainable coastal development.
           </p>
           <div className="grid grid-cols-3 gap-4 pt-4">
             {[
-              { k: "12,480", v: "Tourists" },
-              { k: "184", v: "Operators" },
-              { k: "31,220", v: "Manifestos" },
+              { v: "Tourists", Icon: Users },
+              { v: "Eco-Dive ID", Icon: Fingerprint },
+              { v: "Analytics", Icon: BarChart3 },
             ].map((s) => (
               <div
                 key={s.v}
-                className="rounded-xl bg-white/10 backdrop-blur px-4 py-3 border border-white/15"
+                className="rounded-xl bg-white/10 backdrop-blur px-4 py-4 border border-white/15"
               >
-                <div className="text-2xl font-display font-bold">{s.k}</div>
-                <div className="text-xs uppercase tracking-wider text-primary-foreground/75">
+                <s.Icon className="size-6" />
+                <div className="mt-2 text-sm font-medium text-primary-foreground/90">
                   {s.v}
                 </div>
               </div>
@@ -1948,13 +1949,13 @@ function Login({ onLogin }: { onLogin: (s: StaffSession) => void }) {
               variant="secondary"
               className="bg-primary-soft text-primary border-0"
             >
-              Admin Login
+              Tourism Office Dashboard
             </Badge>
             <h2 className="mt-3 text-3xl font-display font-bold text-foreground">
               Welcome back
             </h2>
             <p className="mt-1 text-sm text-muted-foreground">
-              Sign in to your tourism office dashboard.
+              Sign in to your account
             </p>
           </div>
           <div className="space-y-4">
@@ -1970,9 +1971,13 @@ function Login({ onLogin }: { onLogin: (s: StaffSession) => void }) {
             <div className="space-y-2">
               <div className="flex justify-between">
                 <Label htmlFor="pw">Password</Label>
-                <a className="text-xs text-primary hover:underline" href="#">
+                <button
+                  type="button"
+                  onClick={() => setResetOpen(true)}
+                  className="text-xs text-primary hover:underline"
+                >
                   Forgot?
-                </a>
+                </button>
               </div>
               <div className="relative">
                 <Input
@@ -4162,14 +4167,6 @@ function TouristMgmt({ session }: { session?: StaffSession | null }) {
   const [viewing, setViewing] = useState<any>(null);
   const [rowBusy, setRowBusy] = useState<"suspend" | "renew" | null>(null);
   const [touristDrilldown, setTouristDrilldown] = useState<any>(null);
-  const [registerOpen, setRegisterOpen] = useState(false);
-  const [regForm, setRegForm] = useState({
-    name: "",
-    nationality: "USA",
-    flag: "🇺🇸",
-    level: "Open Water",
-    passType: "Daily" as "Daily" | "Annual",
-  });
 
   const touristDiveHistory: Record<
     string,
@@ -5203,21 +5200,6 @@ function TouristMgmt({ session }: { session?: StaffSession | null }) {
               <X className="size-3.5 mr-1" /> Clear all
             </Button>
           )}
-          <Button
-            className="ml-auto gradient-primary text-primary-foreground"
-            disabled={isLiveData}
-            title={
-              isLiveData
-                ? "Registration goes live in Phase 1b — creating auth.users rows needs a server function, impossible client-side"
-                : undefined
-            }
-            onClick={() => {
-              if (!canAct) return deny();
-              setRegisterOpen(true);
-            }}
-          >
-            <Plus className="size-4 mr-1.5" /> Register Tourist
-          </Button>
         </div>
         <ActiveFilterBadges
           filters={activeFilters}
@@ -5465,153 +5447,6 @@ function TouristMgmt({ session }: { session?: StaffSession | null }) {
         )}
       </DrilldownDialog>
 
-      <Dialog open={registerOpen} onOpenChange={setRegisterOpen}>
-        <DialogContent className="max-w-md">
-          <DialogHeader>
-            <DialogTitle>Register Tourist</DialogTitle>
-            <p className="text-sm text-muted-foreground">
-              Add a new tourist to the registry.
-            </p>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="space-y-2">
-              <Label htmlFor="reg-name">Full Name</Label>
-              <Input
-                id="reg-name"
-                placeholder="e.g. Juan Dela Cruz"
-                value={regForm.name}
-                onChange={(e) =>
-                  setRegForm((p) => ({ ...p, name: e.target.value }))
-                }
-              />
-            </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-2">
-                <Label>Nationality</Label>
-                <Select
-                  value={regForm.nationality}
-                  onValueChange={(v) => {
-                    setRegForm((p) => ({
-                      ...p,
-                      nationality: v,
-                      flag: flagFor(v),
-                    }));
-                  }}
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {ALL_NATIONALITIES.map((n) => (
-                      <SelectItem key={n} value={n}>
-                        {n}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>Dive Level</Label>
-                <Select
-                  value={regForm.level}
-                  onValueChange={(v) =>
-                    setRegForm((p) => ({ ...p, level: v }))
-                  }
-                >
-                  <SelectTrigger>
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {ALL_LEVELS.map((l) => (
-                      <SelectItem key={l} value={l}>
-                        {l}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            </div>
-            <div className="space-y-2">
-              <Label>Dive Pass Type</Label>
-              <Select
-                value={regForm.passType}
-                onValueChange={(v) =>
-                  setRegForm((p) => ({
-                    ...p,
-                    passType: v as "Daily" | "Annual",
-                  }))
-                }
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Select pass type" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="Daily">Daily — 1 day</SelectItem>
-                  <SelectItem value="Annual">Annual — 365 days</SelectItem>
-                </SelectContent>
-              </Select>
-              <p className="text-xs text-muted-foreground">
-                {regForm.passType === "Daily"
-                  ? "Valid for the day of registration."
-                  : "Valid for one year from registration."}
-              </p>
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setRegisterOpen(false)}>
-              Cancel
-            </Button>
-            <Button
-              className="gradient-primary text-primary-foreground"
-              onClick={() => {
-                if (!regForm.name.trim()) {
-                  toast.error("Name is required");
-                  return;
-                }
-                const newId = `TR-${10271 + mockTourists.length}`;
-                const today = new Date().toISOString().slice(0, 10);
-                let expires: string;
-                if (regForm.passType === "Daily") {
-                  // Daily pass expires same day
-                  expires = today;
-                } else {
-                  const nextYear = new Date();
-                  nextYear.setFullYear(nextYear.getFullYear() + 1);
-                  expires = nextYear.toISOString().slice(0, 10);
-                }
-                const newTourist: any = {
-                  id: newId,
-                  name: regForm.name.trim(),
-                  nationality: regForm.nationality,
-                  flag: regForm.flag,
-                  level: regForm.level,
-                  passType: regForm.passType,
-                  status: "Active",
-                  registered: today,
-                  expires,
-                };
-                setMockTourists((prev) => [newTourist, ...prev]);
-                pushAuditLog(
-                  `Registered tourist ${newId} — ${regForm.name.trim()} (${regForm.passType} pass)`,
-                );
-                toast.success("Tourist registered", {
-                  description: `${newId} — ${regForm.name.trim()} · ${regForm.passType} Pass`,
-                });
-                setRegForm({
-                  name: "",
-                  nationality: "USA",
-                  flag: "🇺🇸",
-                  level: "Open Water",
-                  passType: "Daily",
-                });
-                setRegisterOpen(false);
-              }}
-            >
-              <Check className="size-4 mr-1" /> Register
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
@@ -7060,11 +6895,9 @@ export function ManifestoView() {
       });
     }
   }, [liveManifests.isError]);
-  const [generating, setGenerating] = useState(false);
   const [rowBusy, setRowBusy] = useState<
     Record<string, "download" | "forward" | null>
   >({});
-  const [generatedIds, setGeneratedIds] = useState<Set<string>>(new Set());
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [forwardDialog, setForwardDialog] = useState<string[] | null>(null);
   const [forwardBusy, setForwardBusy] = useState(false);
@@ -7198,30 +7031,6 @@ export function ManifestoView() {
     else if (key === "dateFrom") setFilters({ dateFrom: "" });
     else if (key === "dateTo") setFilters({ dateTo: "" });
     else if (key === "verification") setVerificationFilter("all");
-  };
-
-  const generate = async () => {
-    setGenerating(true);
-    const tId = toast.loading("Generating manifesto…", {
-      description: "Compiling divers, site data and operator signatures.",
-    });
-    await new Promise((r) => setTimeout(r, 1400));
-    const newItem = {
-      id: `MF-${55030 + items.length + 1}`,
-      operator: "Deep Blue Charters",
-      site: "Blue Hole",
-      divers: 6 + Math.floor(Math.random() * 8),
-      date: new Date().toISOString().slice(0, 10),
-    };
-    setMockItems((prev) => [newItem, ...prev]);
-    setGeneratedIds((s) => new Set(s).add(newItem.id));
-    setGenerating(false);
-    toast.success("Manifesto generated", {
-      id: tId,
-      description: `${newItem.id} · ${newItem.site} · ${newItem.divers} divers`,
-      icon: <Sparkles className="size-4" />,
-      action: { label: "View", onClick: () => openViewing(newItem) },
-    });
   };
 
   const openViewing = (m: any) => {
@@ -7374,23 +7183,6 @@ export function ManifestoView() {
               <X className="size-3.5 mr-1" /> Clear
             </Button>
           )}
-          <Button
-            onClick={generate}
-            disabled={generating || isLiveData}
-            title={
-              isLiveData
-                ? "Manifest creation lives in the operator app — the dashboard has no staff INSERT grant"
-                : undefined
-            }
-            className="md:ml-auto gradient-primary text-primary-foreground shadow-glow"
-          >
-            {generating ? (
-              <Loader2 className="size-4 mr-1.5 animate-spin" />
-            ) : (
-              <Sparkles className="size-4 mr-1.5" />
-            )}
-            {generating ? "Generating…" : "Generate Manifesto"}
-          </Button>
         </div>
         <ActiveFilterBadges
           filters={activeFilters}
@@ -7465,7 +7257,6 @@ export function ManifestoView() {
           </div>
         ) : (
           mPaged.map((m, idx) => {
-            const isNew = generatedIds.has(m.id);
             const b = rowBusy[m.id];
             return (
               <div
@@ -7475,11 +7266,7 @@ export function ManifestoView() {
               >
                 <Card
                   className={`p-0 overflow-hidden shadow-elegant border-border/60 hover:shadow-glow hover:-translate-y-0.5 transition-all ${
-                    isNew
-                      ? "ring-2 ring-primary/40"
-                      : selected.has(m.id)
-                        ? "ring-2 ring-primary/40"
-                        : ""
+                    selected.has(m.id) ? "ring-2 ring-primary/40" : ""
                   }`}
                 >
                   <div
@@ -7530,11 +7317,6 @@ export function ManifestoView() {
                     {isVerified(m) && (
                       <div className="absolute top-3 left-10 rounded-full bg-green-500/90 text-white text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 flex items-center gap-1">
                         <ShieldCheck className="size-3" /> Verified
-                      </div>
-                    )}
-                    {isNew && (
-                      <div className="absolute top-3 left-10 rounded-full bg-white text-primary text-[10px] font-bold uppercase tracking-wider px-2 py-0.5 shadow-glow flex items-center gap-1">
-                        <Sparkles className="size-3" /> New
                       </div>
                     )}
                   </div>
