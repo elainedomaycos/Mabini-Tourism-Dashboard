@@ -1008,8 +1008,10 @@ export function useStaffLive() {
 
 /**
  * Deactivate/reactivate a staffer. Superadmin-only via 034 — RLS rejects
- * anything else. No hard delete exists by design (deactivation preserves
- * history); the UI offers none either.
+ * anything else. Deactivation is reversible and is the preferred "remove"
+ * action; hard delete exists only to correct a bad invite and lives in the
+ * service-role server fn (delete-staff-fn.ts), which cascades the auth user
+ * away so no DELETE on to_staff is ever needed.
  */
 export async function setStaffActive(
   dbId: string,

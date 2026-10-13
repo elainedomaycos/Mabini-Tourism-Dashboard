@@ -167,8 +167,10 @@ import {
   type StaffSession,
 } from "@/lib/staff-auth";
 import { createStaffAccount } from "@/lib/create-staff-fn";
+import { deleteStaffAccount } from "@/lib/delete-staff-fn";
 import {
   useLiveMode,
+  isLiveMode,
   useLiveRealtime,
   useOperatorApplicationsLive,
   useReceiptsLive,
@@ -10844,7 +10846,7 @@ function SettingsPage() {
         return;
       }
       pushAuditLog(
-        `Invited staffer ${res.user.email} as ${res.user.role === "superadmin" ? "Super Admin" : "TO Staff"} (${res.status})`
+        `Invited staff account ${res.user.email} as ${res.user.role === "superadmin" ? "Super Admin" : "TO Staff"} (${res.status})`
       );
       invalidateStaff();
       setUserDialog(null);
@@ -10873,6 +10875,13 @@ function SettingsPage() {
   const activeSuperadmins = staffUsers.filter(
     (u) => u.role === "superadmin" && u.isActive
   ).length;
+  // Pending suspend/reactivate, awaiting explicit confirmation. Deactivation
+  // cuts a staffer off immediately and revokes their session, so it must not
+  // fire from a single unconfirmed click.
+  const [confirmToggle, setConfirmToggle] = useState<{
+    id: string;
+    suspend: boolean;
+  } | null>(null);
 
   const toggleUserStatus = async (id: string) => {
     if (!canAdmin) return deny("Only Super Admin can manage staff access.");
@@ -10890,18 +10899,94 @@ function SettingsPage() {
       await setStaffActive(id, !u.isActive);
       invalidateStaff();
       pushAuditLog(
-        `${!u.isActive ? "Reactivated" : "Deactivated"} staffer ${u.email}`
+        `${!u.isActive ? "Reactivated" : "Suspended"} staff account ${u.email}`
       );
       toast.success(
-        `Staffer ${!u.isActive ? "reactivated" : "deactivated"}`,
+        `Staff account ${!u.isActive ? "reactivated" : "suspended"}`,
         { description: u.email }
       );
     } catch (e) {
-      toast.error("Could not update staffer", {
+      toast.error("Could not update staff account", {
         description: dbErrorMessage(e),
       });
     } finally {
       setRowBusy((b) => ({ ...b, [id]: false }));
+      setConfirmToggle(null);
+    }
+  };
+
+  const askToggleStatus = (id: string) => {
+    if (!canAdmin) return deny("Only Super Admin can manage staff access.");
+    const u = staffUsers.find((x) => x._dbId === id);
+    if (!u) return;
+    if (isSelf(id) && u.isActive) {
+      toast.error("Action not allowed", {
+        description: "You cannot deactivate your own account.",
+      });
+      return;
+    }
+    if (
+      u.isActive &&
+      u.role === "superadmin" &&
+      activeSuperadmins <= 1
+    ) {
+      toast.error("Action not allowed", {
+        description:
+          "This is the last active superadmin. Promote another staff member first.",
+      });
+      return;
+    }
+    setConfirmToggle({ id, suspend: u.isActive });
+  };
+
+  // Permanent removal, restricted to already-suspended accounts (see
+  // delete-staff-fn.ts). Deactivate -> verify -> delete is the cooling-off
+  // path: suspend is reversible, this is not.
+  const [confirmDelete, setConfirmDelete] = useState<{
+    id: string;
+    email: string;
+    fullName: string;
+  } | null>(null);
+  const [deleteTyped, setDeleteTyped] = useState("");
+  const [deleteBusy, setDeleteBusy] = useState(false);
+
+  const submitDelete = async () => {
+    const target = confirmDelete;
+    if (!target) return;
+    if (!canAdmin) return deny("Only Super Admin can delete staff accounts.");
+    setDeleteBusy(true);
+    try {
+      const accessToken = await getAccessToken();
+      if (!accessToken) {
+        toast.error("Session expired", {
+          description: "Please sign out and sign in again.",
+        });
+        return;
+      }
+      const res = await deleteStaffAccount({
+        data: { userId: target.id, accessToken },
+      });
+      if (!res.ok) {
+        toast.error("Could not delete staff account", {
+          description: res.message,
+        });
+        return;
+      }
+      invalidateStaff();
+      pushAuditLog(
+        `Deleted staff account ${res.deleted.email} (${res.deleted.fullName})`
+      );
+      toast.success("Staff account deleted", {
+        description: res.deleted.email,
+      });
+      setConfirmDelete(null);
+      setDeleteTyped("");
+    } catch (err) {
+      toast.error("Could not delete staff account", {
+        description: dbErrorMessage(err),
+      });
+    } finally {
+      setDeleteBusy(false);
     }
   };
 
@@ -11039,11 +11124,10 @@ function SettingsPage() {
             className="gradient-primary text-primary-foreground"
             onClick={openInvite}
           >
-            <Plus className="size-4 mr-1.5" /> Invite Staffer
+            <Plus className="size-4 mr-1.5" /> Invite Staff
           </Button>
           <span className="text-xs text-muted-foreground">
-            {staffUsers.length} staffer{staffUsers.length !== 1 ? "s" : ""} ·
-            live from to_staff
+            {staffUsers.length} staff · live from to_staff
           </span>
         </div>
         {staffLive.isError ? (
@@ -11069,7 +11153,7 @@ function SettingsPage() {
             <Table>
               <TableHeader>
                 <TableRow className="bg-secondary/50">
-                  <TableHead>Staffer</TableHead>
+                  <TableHead>Staff</TableHead>
                   <TableHead>Role</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead>Member Since</TableHead>
@@ -11184,23 +11268,54 @@ function SettingsPage() {
                               size="sm"
                               variant="ghost"
                               disabled={busy || self}
+                              className={
+                                u.isActive
+                                  ? "text-destructive hover:text-destructive"
+                                  : "text-success hover:text-success"
+                              }
                               title={
                                 self
                                   ? "You cannot change your own access"
                                   : u.isActive
-                                    ? "Deactivate"
-                                    : "Reactivate"
+                                    ? "Suspend account"
+                                    : "Reactivate account"
                               }
-                              onClick={() => toggleUserStatus(u._dbId)}
+                              onClick={() => askToggleStatus(u._dbId)}
                             >
                               {busy ? (
                                 <Loader2 className="size-4 animate-spin" />
                               ) : u.isActive ? (
-                                <XCircle className="size-4 text-destructive" />
+                                <>
+                                  <Ban className="size-4" /> Suspend
+                                </>
                               ) : (
-                                <CheckCircle2 className="size-4 text-success" />
+                                <>
+                                  <CheckCircle2 className="size-4" /> Reactivate
+                                </>
                               )}
                             </Button>
+                            {/* Delete is a mistake-correction tool for a bad
+                                invite, so it only appears once the account is
+                                already suspended and its access revoked. */}
+                            {!u.isActive && !self && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                disabled={busy}
+                                className="text-destructive hover:text-destructive"
+                                title="Delete this staff account permanently"
+                                onClick={() => {
+                                  setDeleteTyped("");
+                                  setConfirmDelete({
+                                    id: u._dbId,
+                                    email: u.email,
+                                    fullName: u.fullName,
+                                  });
+                                }}
+                              >
+                                <Trash2 className="size-4" /> Delete
+                              </Button>
+                            )}
                           </div>
                         </TableCell>
                       </TableRow>
@@ -11213,6 +11328,148 @@ function SettingsPage() {
         )}
 
         <Dialog
+          open={!!confirmToggle}
+          onOpenChange={(o) => {
+            if (!o) setConfirmToggle(null);
+          }}
+        >
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>
+                {confirmToggle?.suspend
+                  ? "Suspend this account?"
+                  : "Reactivate this account?"}
+              </DialogTitle>
+              <DialogDescription className="pt-1">
+                {confirmToggle?.suspend ? (
+                  <>
+                    <span className="font-medium text-foreground">
+                      {staffUsers.find((x) => x._dbId === confirmToggle?.id)
+                        ?.fullName}
+                    </span>{" "}
+                    will be signed out immediately and blocked from signing in
+                    again until reactivated. Their audit history is kept. This
+                    is recorded in the audit log.
+                  </>
+                ) : (
+                  <>
+                    This staff member will regain full access to the dashboard
+                    according to their{" "}
+                    <span className="font-medium text-foreground">
+                      role
+                    </span>
+                    . This is recorded in the audit log.
+                  </>
+                )}
+              </DialogDescription>
+            </DialogHeader>
+            <div className="flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2">
+              <Button
+                type="button"
+                variant="outline"
+                className="h-11"
+                onClick={() => setConfirmToggle(null)}
+                disabled={
+                  !!confirmToggle && !!rowBusy[confirmToggle.id]
+                }
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                className="h-11 gradient-primary text-primary-foreground"
+                onClick={() => {
+                  if (confirmToggle) toggleUserStatus(confirmToggle.id);
+                }}
+                disabled={!!confirmToggle && !!rowBusy[confirmToggle.id]}
+              >
+                {confirmToggle && rowBusy[confirmToggle.id] ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  "Confirm"
+                )}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
+          open={!!confirmDelete}
+          onOpenChange={(o) => {
+            if (!o && !deleteBusy) {
+              setConfirmDelete(null);
+              setDeleteTyped("");
+            }
+          }}
+        >
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Delete this staff account?</DialogTitle>
+              <DialogDescription className="pt-1">
+                This permanently removes{" "}
+                <span className="font-medium text-foreground">
+                  {confirmDelete?.fullName}
+                </span>{" "}
+                ({confirmDelete?.email}) and signs them out for good. The account
+                can never be recovered — their audit history is kept, but the
+                staff record is gone. This is recorded in the audit log.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-2">
+              <Label htmlFor="confirm-delete-email">
+                Type{" "}
+                <span className="font-medium text-foreground">
+                  {confirmDelete?.email}
+                </span>{" "}
+                to confirm
+              </Label>
+              <Input
+                id="confirm-delete-email"
+                type="email"
+                autoComplete="off"
+                placeholder={confirmDelete?.email}
+                value={deleteTyped}
+                onChange={(e) => setDeleteTyped(e.target.value)}
+                disabled={deleteBusy}
+              />
+            </div>
+            <div className="flex flex-col-reverse sm:flex-row sm:justify-end sm:space-x-2">
+              <Button
+                type="button"
+                variant="outline"
+                className="h-11"
+                onClick={() => {
+                  setConfirmDelete(null);
+                  setDeleteTyped("");
+                }}
+                disabled={deleteBusy}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                className="h-11 bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                onClick={submitDelete}
+                disabled={
+                  deleteBusy ||
+                  !confirmDelete ||
+                  deleteTyped.trim().toLowerCase() !==
+                    confirmDelete.email.toLowerCase()
+                }
+              >
+                {deleteBusy ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <>
+                    <Trash2 className="size-4" /> Delete permanently
+                  </>
+                )}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog
           open={userDialog === "invite"}
           onOpenChange={(o) => {
             if (!o) setUserDialog(null);
@@ -11220,7 +11477,7 @@ function SettingsPage() {
         >
           <DialogContent className="max-w-md">
             <DialogHeader>
-              <DialogTitle>Invite a staffer</DialogTitle>
+              <DialogTitle>Invite a staff member</DialogTitle>
               <p className="text-sm text-muted-foreground pt-1">
                 Creates the auth account (auto-confirmed) and links the
                 staff row in one step. Share the temporary password
@@ -11261,7 +11518,7 @@ function SettingsPage() {
                   onChange={(e) =>
                     setInviteForm({ ...inviteForm, email: e.target.value })
                   }
-                  placeholder="staffer@reef.gov"
+                  placeholder="staff@reef.gov"
                   className={
                     inviteErrors.email
                       ? "border-destructive focus-visible:ring-destructive/30"
