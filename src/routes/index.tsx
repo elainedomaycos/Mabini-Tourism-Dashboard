@@ -110,6 +110,7 @@ import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogFooter,
@@ -155,6 +156,7 @@ import { Pagination, usePagination } from "@/components/ui/pagination";
 import type { DiveSiteHeatmap as DiveSiteHeatmapType } from "@/components/DiveSiteHeatmap";
 import { RejectReasonDialog } from "@/components/RejectReasonDialog";
 import {
+  requestPasswordReset,
   signInStaff,
   signOutStaff,
   useStaffSession,
@@ -1730,8 +1732,21 @@ function Reveal({
 
 /* ------------------------------ APP ROOT ------------------------------ */
 function App() {
-  const { session, checking, setSession } = useStaffSession();
+  const { session, checking, setSession, recovery } = useStaffSession();
+  const navigate = useNavigate({ from: "/" });
+  // A recovery link signs the user in with a password-change-scoped token.
+  // Hand it to the reset page instead of admitting it as a normal session.
+  useEffect(() => {
+    if (recovery) navigate({ to: "/reset-password", replace: true });
+  }, [recovery, navigate]);
   if (checking) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-background">
+        <Loader2 className="size-8 animate-spin text-primary" />
+      </div>
+    );
+  }
+  if (recovery) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
         <Loader2 className="size-8 animate-spin text-primary" />
@@ -1766,6 +1781,35 @@ function Login({ onLogin }: { onLogin: (s: StaffSession) => void }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [showPw, setShowPw] = useState(false);
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetEmail, setResetEmail] = useState("");
+  const [resetBusy, setResetBusy] = useState(false);
+  const [resetError, setResetError] = useState("");
+  const [resetSent, setResetSent] = useState(false);
+
+  const submitReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setResetError("");
+    if (!resetEmail.trim()) {
+      setResetError("Enter your staff email address.");
+      return;
+    }
+    setResetBusy(true);
+    const res = await requestPasswordReset(resetEmail);
+    setResetBusy(false);
+    if (!res.ok) {
+      setResetError(res.error);
+      return;
+    }
+    setResetSent(true);
+  };
+
+  const closeReset = () => {
+    setResetOpen(false);
+    setResetEmail("");
+    setResetError("");
+    setResetSent(false);
+  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1930,6 +1974,76 @@ function Login({ onLogin }: { onLogin: (s: StaffSession) => void }) {
           </p>
         </form>
       </div>
+
+      {/* Password reset request */}
+      <Dialog
+        open={resetOpen}
+        onOpenChange={(open) => (open ? setResetOpen(true) : closeReset())}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="font-display">
+              {resetSent ? "Check your email" : "Reset your password"}
+            </DialogTitle>
+            <DialogDescription>
+              {resetSent
+                ? "If that address belongs to a Tourism Office account, a reset link is on its way. The link expires in 60 minutes."
+                : "Enter your staff email and we'll send you a link to choose a new password."}
+            </DialogDescription>
+          </DialogHeader>
+          {resetSent ? (
+            <DialogFooter>
+              <Button
+                type="button"
+                className="w-full h-11 gradient-primary text-primary-foreground"
+                onClick={closeReset}
+              >
+                Back to sign in
+              </Button>
+            </DialogFooter>
+          ) : (
+            <form onSubmit={submitReset} className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="reset-email">Staff email</Label>
+                <Input
+                  id="reset-email"
+                  type="email"
+                  autoComplete="email"
+                  placeholder="you@mabini.gov.ph"
+                  value={resetEmail}
+                  onChange={(e) => setResetEmail(e.target.value)}
+                  disabled={resetBusy}
+                />
+              </div>
+              {resetError && (
+                <p className="text-xs text-destructive">{resetError}</p>
+              )}
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={closeReset}
+                  disabled={resetBusy}
+                  className="h-11"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={resetBusy}
+                  className="h-11 gradient-primary text-primary-foreground"
+                >
+                  {resetBusy ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : (
+                    "Send reset link"
+                  )}
+                </Button>
+              </DialogFooter>
+            </form>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
