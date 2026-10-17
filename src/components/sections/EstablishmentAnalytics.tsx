@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -10,9 +11,16 @@ import {
 } from "@/components/ui/table";
 import { Progress } from "@/components/ui/progress";
 import { SectionCard, StatCard, Reveal } from "@/components/shared";
+import {
+  ChartEmptyState,
+  isEmptyChartData,
+} from "@/components/ChartEmptyState";
 import { Building2, MapPin, Shield, Star, Download } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { useLiveMode, useEstablishmentsLive, useOperatorApplicationsLive } from "@/lib/queries";
+import { InsightWidget } from "@/components/InsightWidget";
+import { buildEstablishmentInsight } from "@/lib/insights";
 import {
   ResponsiveContainer,
   BarChart,
@@ -187,14 +195,121 @@ function StarRating({ value }: { value: number }) {
 }
 
 export function EstablishmentAnalytics() {
+  const isLive = useLiveMode();
+  const liveEst = useEstablishmentsLive();
+  const liveApps = useOperatorApplicationsLive();
+  const rows = liveEst.data;
+  const isLiveData = isLive && !!rows;
+
+  const byBarangayData = useMemo(() => {
+    if (!isLiveData || !rows) return establishmentsByBarangay;
+    const map = new Map<string, number>();
+    for (const r of rows) {
+      const b = r.barangay && r.barangay !== "—" ? r.barangay : "Unspecified";
+      map.set(b, (map.get(b) ?? 0) + 1);
+    }
+    return [...map.entries()]
+      .map(([barangay, count]) => ({ barangay, count }))
+      .sort((a, b) => b.count - a.count);
+  }, [isLiveData, rows]);
+
+  const activityData = useMemo(() => {
+    if (!isLiveData || !rows) return activityLevels;
+    return [...rows]
+      .sort((a, b) => b.totalManifestos - a.totalManifestos)
+      .slice(0, 8)
+      .map((r) => ({
+        name: r.name,
+        manifestos: r.totalManifestos,
+        credits: r.creditBalance,
+      }));
+  }, [isLiveData, rows]);
+
+  const topEstData = useMemo<
+    Array<{
+      name: string;
+      manifestos: number;
+      rating: number | null;
+      ecoRating: number | null;
+      status: string;
+    }>
+  >(() => {
+    if (!isLiveData || !rows) return topEstablishments;
+    return [...rows]
+      .sort((a, b) => b.totalManifestos - a.totalManifestos)
+      .slice(0, 8)
+      .map((r) => ({
+        name: r.name,
+        manifestos: r.totalManifestos,
+        rating: null,
+        ecoRating: null,
+        status: r.status,
+      }));
+  }, [isLiveData, rows]);
+
+  const totalEstablishments = isLiveData && rows ? rows.length : TOTAL;
+  const topBarangay =
+    isLiveData && byBarangayData.length
+      ? byBarangayData[0].barangay
+      : TOP_BARANGAY;
+  const topMaxManifestos = topEstData[0]?.manifestos || 1;
+
+  const pendingApplications = useMemo(
+    () => (liveApps.data ?? []).filter((a) => a.status === "Pending").length,
+    [liveApps.data],
+  );
+
+  const establishmentInsight = useMemo(() => {
+    const source = rows ?? [];
+    const total = isLiveData ? source.length : totalEstablishments;
+    const active = isLiveData
+      ? source.filter((r) => r.status === "Active").length
+      : TOTAL;
+    const suspended = isLiveData
+      ? source.filter((r) => r.status === "Suspended").length
+      : 0;
+    const barangays = byBarangayData.length;
+    const topShare =
+      total > 0 && byBarangayData[0]
+        ? (byBarangayData[0].count / total) * 100
+        : 0;
+    const idle = isLiveData
+      ? source.filter((r) => r.totalManifestos === 0).length
+      : 0;
+    const totalCredits = isLiveData
+      ? source.reduce((a, r) => a + (r.creditBalance || 0), 0)
+      : 0;
+
+    return buildEstablishmentInsight({
+      live: isLiveData,
+      total,
+      active,
+      suspended,
+      barangays,
+      topBarangay: isLiveData ? (byBarangayData[0]?.barangay ?? null) : TOP_BARANGAY,
+      topBarangayShare: topShare,
+      idleEstablishments: idle,
+      totalCredits,
+      pendingApplications,
+      seed: new Date().getDate(),
+    });
+  }, [
+    rows,
+    isLiveData,
+    totalEstablishments,
+    byBarangayData,
+    pendingApplications,
+  ]);
+
   return (
     <div className="space-y-6">
+      <InsightWidget insight={establishmentInsight} label="Establishments" />
       <Reveal>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <StatCard
             icon={Building2}
             label="Total Establishments"
-            value={String(TOTAL)}
+            value={String(totalEstablishments)}
             delta="+2"
           />
           <StatCard
@@ -212,7 +327,7 @@ export function EstablishmentAnalytics() {
           <StatCard
             icon={MapPin}
             label="Top Barangay"
-            value={TOP_BARANGAY}
+            value={topBarangay}
             delta="+4"
           />
         </div>
@@ -231,10 +346,13 @@ export function EstablishmentAnalytics() {
                 Export CSV
               </Button>
             </div>
+            {isEmptyChartData(byBarangayData) ? (
+              <ChartEmptyState className="h-64" />
+            ) : (
             <div className="h-64">
               <ResponsiveContainer>
                 <BarChart
-                  data={establishmentsByBarangay}
+                  data={byBarangayData}
                   margin={{ left: -20, right: 8 }}
                 >
                   <CartesianGrid
@@ -257,7 +375,7 @@ export function EstablishmentAnalytics() {
                   />
                   <Tooltip contentStyle={tooltipStyle} />
                   <Bar dataKey="count" radius={[8, 8, 0, 0]}>
-                    {establishmentsByBarangay.map((_, i) => (
+                    {byBarangayData.map((_, i) => (
                       <Cell
                         key={i}
                         fill={CHART_COLORS[i % CHART_COLORS.length]}
@@ -267,9 +385,13 @@ export function EstablishmentAnalytics() {
                 </BarChart>
               </ResponsiveContainer>
             </div>
+            )}
           </SectionCard>
 
           <SectionCard title="Permit Status">
+            {isEmptyChartData(permitStatus) ? (
+              <ChartEmptyState className="h-64" />
+            ) : (
             <div className="h-64">
               <ResponsiveContainer>
                 <PieChart>
@@ -294,6 +416,7 @@ export function EstablishmentAnalytics() {
                 </PieChart>
               </ResponsiveContainer>
             </div>
+            )}
             <div className="mt-2 grid grid-cols-3 gap-1.5">
               {permitStatus.map((p, i) => (
                 <div key={p.status} className="flex items-center gap-2 text-xs">
@@ -325,10 +448,13 @@ export function EstablishmentAnalytics() {
                 Export CSV
               </Button>
             </div>
+            {isEmptyChartData(activityData) ? (
+              <ChartEmptyState className="h-80" />
+            ) : (
             <div className="h-80">
               <ResponsiveContainer>
                 <BarChart
-                  data={activityLevels}
+                  data={activityData}
                   layout="vertical"
                   margin={{ left: 20 }}
                 >
@@ -362,6 +488,7 @@ export function EstablishmentAnalytics() {
                 </BarChart>
               </ResponsiveContainer>
             </div>
+            )}
           </SectionCard>
 
           <SectionCard title="Eco Rating Distribution">
@@ -375,6 +502,9 @@ export function EstablishmentAnalytics() {
                 Export CSV
               </Button>
             </div>
+            {isEmptyChartData(ecoRatingDistribution) ? (
+              <ChartEmptyState className="h-64" />
+            ) : (
             <div className="h-64">
               <ResponsiveContainer>
                 <RadialBarChart
@@ -396,6 +526,7 @@ export function EstablishmentAnalytics() {
                 </RadialBarChart>
               </ResponsiveContainer>
             </div>
+            )}
             <div className="space-y-1.5 mt-1">
               {ecoRatingDistribution.map((d, i) => (
                 <div key={d.rating} className="flex items-center gap-2 text-xs">
@@ -428,7 +559,7 @@ export function EstablishmentAnalytics() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {topEstablishments.map((e, i) => (
+              {topEstData.map((e, i) => (
                 <TableRow
                   key={e.name}
                   className="hover:bg-secondary/50 transition-colors"
@@ -442,9 +573,7 @@ export function EstablishmentAnalytics() {
                   <TableCell>
                     <div className="flex items-center gap-2 min-w-[140px]">
                       <Progress
-                        value={
-                          (e.manifestos / topEstablishments[0].manifestos) * 100
-                        }
+                        value={(e.manifestos / topMaxManifestos) * 100}
                         className="h-1.5 flex-1"
                       />
                       <span className="text-xs text-muted-foreground whitespace-nowrap">
@@ -453,11 +582,15 @@ export function EstablishmentAnalytics() {
                     </div>
                   </TableCell>
                   <TableCell>
-                    <StarRating value={e.rating} />
+                    {e.rating == null ? (
+                      <span className="text-muted-foreground">—</span>
+                    ) : (
+                      <StarRating value={e.rating} />
+                    )}
                   </TableCell>
                   <TableCell>
                     <span className="text-sm font-medium">
-                      {e.ecoRating.toFixed(1)}
+                      {e.ecoRating == null ? "—" : e.ecoRating.toFixed(1)}
                     </span>
                   </TableCell>
                   <TableCell>
@@ -481,6 +614,9 @@ export function EstablishmentAnalytics() {
 
       <Reveal delay={360}>
         <SectionCard title="Revenue & Credit Flow by Establishment">
+          {isEmptyChartData(revenueFlow) ? (
+            <ChartEmptyState className="h-80" />
+          ) : (
           <div className="h-80">
             <ResponsiveContainer>
               <ComposedChart
@@ -543,6 +679,7 @@ export function EstablishmentAnalytics() {
               </ComposedChart>
             </ResponsiveContainer>
           </div>
+          )}
           <div className="mt-3 flex items-center gap-4 text-xs text-muted-foreground">
             <span className="flex items-center gap-1.5">
               <span className="inline-block size-2.5 rounded-sm" style={{ background: "var(--color-chart-1)" }} />
@@ -558,6 +695,9 @@ export function EstablishmentAnalytics() {
 
       <Reveal delay={400}>
         <SectionCard title="Eco-Performance Matrix">
+          {isEmptyChartData(ecoMatrix) ? (
+            <ChartEmptyState className="h-80" />
+          ) : (
           <div className="h-80">
             <ResponsiveContainer>
               <ScatterChart margin={{ left: 10, right: 10, top: 10, bottom: 10 }}>
@@ -638,6 +778,7 @@ export function EstablishmentAnalytics() {
               </ScatterChart>
             </ResponsiveContainer>
           </div>
+          )}
           <div className="mt-3 flex items-center gap-4 text-xs text-muted-foreground">
             <span className="flex items-center gap-1.5">
               <span className="inline-block size-2.5 rounded-full" style={{ background: "oklch(0.65 0.15 145)" }} />

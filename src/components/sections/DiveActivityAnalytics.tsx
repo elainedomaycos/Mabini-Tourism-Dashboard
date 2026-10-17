@@ -35,6 +35,15 @@ import {
   DrilldownDialog,
 } from "@/components/shared";
 import {
+  DIVING_TYPE_KEYS,
+  DIVING_TYPE_LABELS,
+  type DivingTypeKey,
+} from "@/lib/diveTaxonomy";
+import {
+  ChartEmptyState,
+  isEmptyChartData,
+} from "@/components/ChartEmptyState";
+import {
   useLiveMode,
   useManifestsLive,
   bucketByMonth,
@@ -43,10 +52,11 @@ import { InsightWidget } from "@/components/InsightWidget";
 import { buildDiveActivityInsight } from "@/lib/insights";
 
 const diveType = [
-  { name: "Reef", value: 62 },
-  { name: "Wreck", value: 18 },
-  { name: "Drift", value: 12 },
-  { name: "Night", value: 8 },
+  { name: "Scuba", value: 38 },
+  { name: "Fun Dive", value: 24 },
+  { name: "Training", value: 14 },
+  { name: "Intro Dive", value: 14 },
+  { name: "Freediver", value: 10 },
 ];
 
 const depthDistribution = [
@@ -82,11 +92,11 @@ const seasonalTrends = [
 ];
 
 const siteByType = [
-  { site: "Blue Hole", reef: 48, wreck: 8, drift: 22, night: 12 },
-  { site: "Coral Gardens", reef: 72, wreck: 4, drift: 10, night: 6 },
-  { site: "Shark Point", reef: 36, wreck: 6, drift: 28, night: 8 },
-  { site: "Loyzaga Wreck", reef: 14, wreck: 42, drift: 6, night: 10 },
-  { site: "Sepoc Point", reef: 40, wreck: 10, drift: 16, night: 18 },
+  { site: "Blue Hole", scuba: 42, introDive: 10, funDive: 48, training: 12, freediver: 6 },
+  { site: "Coral Gardens", scuba: 30, introDive: 34, funDive: 40, training: 18, freediver: 4 },
+  { site: "Shark Point", scuba: 44, introDive: 6, funDive: 36, training: 10, freediver: 8 },
+  { site: "Loyzaga Wreck", scuba: 38, introDive: 4, funDive: 22, training: 26, freediver: 6 },
+  { site: "Sepoc Point", scuba: 24, introDive: 28, funDive: 30, training: 32, freediver: 5 },
 ];
 
 const capacityData = [
@@ -110,14 +120,50 @@ const TYPE_COLORS = [
   "var(--color-chart-2)",
   "var(--color-chart-3)",
   "var(--color-chart-4)",
+  "var(--color-chart-5)",
 ];
 
 const TYPE_BADGE_MAP: Record<string, string> = {
-  Reef: "bg-success/10 text-success border-success/20",
-  Wreck: "bg-info/10 text-info border-info/20",
-  Drift: "bg-warning/15 text-warning-foreground border-warning/30",
-  Night: "bg-muted text-muted-foreground border-border",
+  Scuba: "bg-success/10 text-success border-success/20",
+  "Intro Dive": "bg-info/10 text-info border-info/20",
+  "Fun Dive": "bg-warning/15 text-warning-foreground border-warning/30",
+  Training: "bg-muted text-muted-foreground border-border",
+  Freediver: "bg-primary/10 text-primary border-primary/20",
 };
+
+/** Map a free-text dive_type to a canonical taxonomy key. */
+function typeKeyOf(raw: string | null | undefined): DivingTypeKey | null {
+  if (!raw) return null;
+  const s = raw.toLowerCase();
+  if (s.includes("scuba")) return "scuba";
+  if (s.includes("intro")) return "introDive";
+  if (s.includes("fun")) return "funDive";
+  if (s.includes("train")) return "training";
+  if (s.includes("free")) return "freediver";
+  return null;
+}
+
+const SEASON_BY_MONTH = [
+  "Winter",
+  "Winter",
+  "Spring",
+  "Spring",
+  "Spring",
+  "Summer",
+  "Summer",
+  "Summer",
+  "Autumn",
+  "Autumn",
+  "Autumn",
+  "Winter",
+];
+const SEASON_ORDER = ["Summer", "Autumn", "Winter", "Spring"];
+
+function monthIndexRaw(dateStr: string | null | undefined): number {
+  if (!dateStr || dateStr === "—") return -1;
+  const d = new Date(dateStr.length <= 10 ? dateStr + "T00:00:00" : dateStr);
+  return Number.isNaN(d.getTime()) ? -1 : d.getMonth();
+}
 
 export function DiveActivityAnalytics() {
   const [drilldown, setDrilldown] = useState<string | null>(null);
@@ -160,22 +206,105 @@ export function DiveActivityAnalytics() {
   })();
 
   const totalDives = diveType.reduce((a, t) => a + t.value, 0);
+
+  // --- Derived datasets: live rows when available, mock otherwise --------
+  const diveTypeData = useMemo(() => {
+    if (!isLiveData || !manifests) return diveType;
+    const counts = new Map<DivingTypeKey, number>();
+    for (const m of manifests) {
+      const k = typeKeyOf(m.diveType);
+      if (k) counts.set(k, (counts.get(k) ?? 0) + 1);
+    }
+    const total = [...counts.values()].reduce((a, c) => a + c, 0) || 1;
+    return DIVING_TYPE_KEYS.filter((k) => counts.has(k)).map((k) => ({
+      name: DIVING_TYPE_LABELS[k],
+      value: Math.round((counts.get(k)! / total) * 100),
+    }));
+  }, [isLiveData, manifests]);
+
+  const siteByTypeData = useMemo(() => {
+    if (!isLiveData || !manifests) return siteByType;
+    type Row = Record<DivingTypeKey, number> & { site: string };
+    const m = new Map<string, Row>();
+    for (const man of manifests) {
+      const k = typeKeyOf(man.diveType);
+      if (!k || !man.site) continue;
+      const row =
+        m.get(man.site) ??
+        ({
+          site: man.site,
+          scuba: 0,
+          introDive: 0,
+          funDive: 0,
+          training: 0,
+          freediver: 0,
+        } as Row);
+      row[k] += man.divers || 1;
+      m.set(man.site, row);
+    }
+    const sum = (r: Row) => DIVING_TYPE_KEYS.reduce((a, k) => a + r[k], 0);
+    return [...m.values()].sort((a, b) => sum(b) - sum(a));
+  }, [isLiveData, manifests]);
+
+  const seasonalData = useMemo(() => {
+    if (!isLiveData || !manifests) return seasonalTrends;
+    const acc = new Map<string, { dives: number; trips: number }>();
+    for (const man of manifests) {
+      const mi = monthIndexRaw(man.date);
+      if (mi < 0) continue;
+      const season = SEASON_BY_MONTH[mi];
+      const row = acc.get(season) ?? { dives: 0, trips: 0 };
+      row.dives += man.divers || 0;
+      row.trips += 1;
+      acc.set(season, row);
+    }
+    return SEASON_ORDER.filter((s) => acc.has(s)).map((season) => ({
+      season,
+      dives: acc.get(season)!.dives,
+      tourists: acc.get(season)!.trips,
+    }));
+  }, [isLiveData, manifests]);
+
+  const capacityDataLive = useMemo(() => {
+    if (!isLiveData || !manifests) return capacityData;
+    const m = new Map<
+      string,
+      { site: string; maxCapacity: number; actualDives: number }
+    >();
+    for (const man of manifests) {
+      if (!man.site) continue;
+      const row =
+        m.get(man.site) ?? { site: man.site, maxCapacity: 0, actualDives: 0 };
+      row.maxCapacity += man.maxDivers || 0;
+      row.actualDives += man.divers || 0;
+      m.set(man.site, row);
+    }
+    return [...m.values()].sort((a, b) => b.actualDives - a.actualDives);
+  }, [isLiveData, manifests]);
+
+  const maxSeasonDives = Math.max(1, ...seasonalData.map((s) => s.dives));
   const peakHourEntry = hourlyActivity.reduce((a, b) =>
     b.dives > a.dives ? b : a,
   );
 
   const selectedType = drilldown
-    ? diveType.find((t) => t.name === drilldown)
+    ? diveTypeData.find((t) => t.name === drilldown)
     : null;
-  const typeSites = selectedType
-    ? siteByType
-        .map((s) => ({
-          site: s.site,
-          dives: (s as any)[drilldown!.toLowerCase()],
-        }))
-        .filter((s) => s.dives > 0)
-        .sort((a, b) => b.dives - a.dives)
-    : [];
+  const drillKey = (drilldown
+    ? (Object.keys(DIVING_TYPE_LABELS) as DivingTypeKey[]).find(
+        (k) => DIVING_TYPE_LABELS[k] === drilldown,
+      )
+    : undefined) as DivingTypeKey | undefined;
+  const typeSites =
+    selectedType && drillKey
+      ? siteByTypeData
+          .map((s) => ({
+            site: s.site,
+            dives: s[drillKey],
+          }))
+          .filter((s) => s.dives > 0)
+          .sort((a, b) => b.dives - a.dives)
+      : [];
 
   const activityInsight = useMemo(() => {
     const rows = manifests ?? [];
@@ -223,8 +352,8 @@ export function DiveActivityAnalytics() {
             <StatCard
               icon={BarChart3}
               label="Most Popular Type"
-              value={isLiveData && topType ? topType.name : "Reef"}
-              delta={isLiveData && topType ? `${topType.share}%` : "62%"}
+              value={isLiveData && topType ? topType.name : "Scuba"}
+              delta={isLiveData && topType ? `${topType.share}%` : "38%"}
             />
             {/* No hour/depth columns exist — stays mock until dive logging adds them. */}
             <StatCard
@@ -255,11 +384,14 @@ export function DiveActivityAnalytics() {
                 Export CSV
               </Button>
             </div>
+            {isEmptyChartData(diveTypeData) ? (
+              <ChartEmptyState className="h-[300px]" />
+            ) : (
             <div className="h-[300px]">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie
-                    data={diveType}
+                    data={diveTypeData}
                     cx="50%"
                     cy="50%"
                     innerRadius={65}
@@ -267,10 +399,10 @@ export function DiveActivityAnalytics() {
                     paddingAngle={3}
                     dataKey="value"
                     stroke="none"
-                    onClick={(_, index) => setDrilldown(diveType[index].name)}
+                    onClick={(_, index) => setDrilldown(diveTypeData[index].name)}
                     className="cursor-pointer"
                   >
-                    {diveType.map((_, i) => (
+                    {diveTypeData.map((_, i) => (
                       <Cell key={i} fill={TYPE_COLORS[i]} />
                     ))}
                   </Pie>
@@ -286,8 +418,9 @@ export function DiveActivityAnalytics() {
                 </PieChart>
               </ResponsiveContainer>
             </div>
+            )}
             <div className="flex items-center justify-center gap-4 mt-2">
-              {diveType.map((t, i) => (
+              {diveTypeData.map((t, i) => (
                 <button
                   key={t.name}
                   onClick={() => setDrilldown(t.name)}
@@ -316,6 +449,9 @@ export function DiveActivityAnalytics() {
                 Export CSV
               </Button>
             </div>
+            {isEmptyChartData(depthDistribution) ? (
+              <ChartEmptyState className="h-[300px]" />
+            ) : (
             <div className="h-[300px]">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart
@@ -358,6 +494,7 @@ export function DiveActivityAnalytics() {
                 </BarChart>
               </ResponsiveContainer>
             </div>
+            )}
           </SectionCard>
         </Reveal>
       </div>
@@ -374,6 +511,9 @@ export function DiveActivityAnalytics() {
               Export CSV
             </Button>
           </div>
+          {isEmptyChartData(hourlyActivity) ? (
+            <ChartEmptyState className="h-[260px]" />
+          ) : (
           <div className="h-[260px]">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart
@@ -427,6 +567,7 @@ export function DiveActivityAnalytics() {
               </AreaChart>
             </ResponsiveContainer>
           </div>
+          )}
         </SectionCard>
       </Reveal>
 
@@ -437,38 +578,26 @@ export function DiveActivityAnalytics() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Site</TableHead>
-                  <TableHead className="text-center">Reef</TableHead>
-                  <TableHead className="text-center">Wreck</TableHead>
-                  <TableHead className="text-center">Drift</TableHead>
-                  <TableHead className="text-center">Night</TableHead>
+                  {DIVING_TYPE_KEYS.map((k) => (
+                    <TableHead key={k} className="text-center">
+                      {DIVING_TYPE_LABELS[k]}
+                    </TableHead>
+                  ))}
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {siteByType.map((row) => (
+                {siteByTypeData.map((row) => (
                   <TableRow key={row.site}>
                     <TableCell className="font-medium text-sm">
                       {row.site}
                     </TableCell>
-                    <TableCell className="text-center">
-                      <Badge variant="secondary" className="font-mono text-xs">
-                        {row.reef}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-center">
-                      <Badge variant="secondary" className="font-mono text-xs">
-                        {row.wreck}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-center">
-                      <Badge variant="secondary" className="font-mono text-xs">
-                        {row.drift}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-center">
-                      <Badge variant="secondary" className="font-mono text-xs">
-                        {row.night}
-                      </Badge>
-                    </TableCell>
+                    {DIVING_TYPE_KEYS.map((k) => (
+                      <TableCell key={k} className="text-center">
+                        <Badge variant="secondary" className="font-mono text-xs">
+                          {row[k]}
+                        </Badge>
+                      </TableCell>
+                    ))}
                   </TableRow>
                 ))}
               </TableBody>
@@ -479,7 +608,7 @@ export function DiveActivityAnalytics() {
         <Reveal delay={240}>
           <SectionCard title="Seasonal Trends">
             <div className="grid grid-cols-2 gap-3">
-              {seasonalTrends.map((s) => (
+              {seasonalData.map((s) => (
                 <Card
                   key={s.season}
                   className="p-4 shadow-elegant border-border/60 hover:border-primary/30 hover:shadow-glow-sm transition-all"
@@ -503,7 +632,7 @@ export function DiveActivityAnalytics() {
                     <div className="mt-2 h-1.5 w-full rounded-full bg-secondary overflow-hidden">
                       <div
                         className="h-full rounded-full bg-primary transition-all"
-                        style={{ width: `${(s.dives / 1840) * 100}%` }}
+                        style={{ width: `${(s.dives / maxSeasonDives) * 100}%` }}
                       />
                     </div>
                   </div>
@@ -517,10 +646,13 @@ export function DiveActivityAnalytics() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Reveal delay={280}>
           <SectionCard title="Dive Site Capacity Utilization">
+            {isEmptyChartData(capacityDataLive) ? (
+              <ChartEmptyState className="h-[300px]" />
+            ) : (
             <div className="h-[300px]">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart
-                  data={capacityData}
+                  data={capacityDataLive}
                   margin={{ top: 5, right: 10, left: 0, bottom: 0 }}
                 >
                   <CartesianGrid
@@ -573,7 +705,7 @@ export function DiveActivityAnalytics() {
                     radius={[4, 4, 0, 0]}
                     barSize={22}
                   >
-                    {capacityData.map((entry, i) => (
+                    {capacityDataLive.map((entry, i) => (
                       <Cell
                         key={i}
                         fill={
@@ -587,11 +719,15 @@ export function DiveActivityAnalytics() {
                 </BarChart>
               </ResponsiveContainer>
             </div>
+            )}
           </SectionCard>
         </Reveal>
 
         <Reveal delay={320}>
           <SectionCard title="Depth Compliance Analysis">
+            {isEmptyChartData(depthCompliance) ? (
+              <ChartEmptyState className="h-[300px]" />
+            ) : (
             <div className="h-[300px]">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart
@@ -646,6 +782,7 @@ export function DiveActivityAnalytics() {
                 </BarChart>
               </ResponsiveContainer>
             </div>
+            )}
           </SectionCard>
         </Reveal>
       </div>

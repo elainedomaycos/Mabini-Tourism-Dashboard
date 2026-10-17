@@ -54,6 +54,7 @@ import {
   FileDown,
   FileText,
   Image as ImageIcon,
+  ImagePlus,
   Loader2,
   RotateCcw,
   Sparkles,
@@ -66,7 +67,6 @@ import {
   Mail,
   Clock,
   CalendarClock,
-  Users2,
   Sun,
   Moon,
   UserCog,
@@ -213,9 +213,18 @@ import {
   markAllNotificationsRead,
   type LiveNotificationRow,
   type MonthBucket,
+  useAnnouncementsLive,
+  createAnnouncement,
+  updateAnnouncement,
+  deleteAnnouncement,
+  uploadAnnouncementPhoto,
+  statusOf,
+  type LiveAnnouncementRow,
+  type AnnouncementStatus,
 } from "@/lib/queries";
 import { ReceiptLightbox } from "@/components/ReceiptLightbox";
 import { ActionRequiredStrip } from "@/components/sections/ActionRequiredStrip";
+import { AnnouncementHero } from "@/components/AnnouncementHero";
 import { DivePassOverview } from "@/components/sections/DivePassOverview";
 import { Establishments } from "@/components/sections/Establishments";
 import { TouristAnalytics } from "@/components/sections/TouristAnalytics";
@@ -226,6 +235,9 @@ import { EstablishmentsPage } from "@/components/sections/EstablishmentsPage";
 import { DiveOpsPage } from "@/components/sections/DiveOpsPage";
 import { DivePassPage, PassPricingEditor } from "@/components/sections/DivePassPage";
 import { InsightWidget } from "@/components/InsightWidget";
+import { ChartEmptyState, isEmptyChartData } from "@/components/ChartEmptyState";
+import { MABINI_BARANGAYS } from "@/lib/barangays";
+import { DIVE_DIFFICULTIES, DIVING_TYPES } from "@/lib/diveTaxonomy";
 import { buildOverviewInsight, buildOperatorInsight } from "@/lib/insights";
 import { AnalyticsPage } from "@/components/sections/AnalyticsPage";
 
@@ -299,17 +311,19 @@ const nationality = [
   { name: "Other", value: 8 },
 ];
 const diveLevel = [
-  { name: "Open Water", value: 45 },
-  { name: "Advanced", value: 28 },
+  { name: "Intro", value: 8 },
+  { name: "Open Water", value: 40 },
+  { name: "Advanced", value: 26 },
   { name: "Rescue", value: 12 },
-  { name: "Divemaster", value: 9 },
+  { name: "Divemaster", value: 8 },
   { name: "Instructor", value: 6 },
 ];
 const diveType = [
-  { name: "Reef", value: 62 },
-  { name: "Wreck", value: 18 },
-  { name: "Drift", value: 12 },
-  { name: "Night", value: 8 },
+  { name: "Scuba", value: 38 },
+  { name: "Fun Dive", value: 24 },
+  { name: "Training", value: 14 },
+  { name: "Intro Dive", value: 14 },
+  { name: "Freediver", value: 10 },
 ];
 const topSites = [
   { name: "Blue Hole", value: 328 },
@@ -338,7 +352,7 @@ const diveSites: {
     barangay: "San Teodoro",
     depth: "12–40 m",
     difficulty: "Advanced",
-    type: "Reef",
+    type: "Fun Dive",
     status: "Active",
     dives: 328,
     description:
@@ -353,7 +367,7 @@ const diveSites: {
     barangay: "Solo",
     depth: "5–25 m",
     difficulty: "Open Water",
-    type: "Reef",
+    type: "Intro Dive",
     status: "Active",
     dives: 284,
     description:
@@ -368,7 +382,7 @@ const diveSites: {
     barangay: "San Teodoro",
     depth: "18–35 m",
     difficulty: "Advanced",
-    type: "Reef",
+    type: "Scuba",
     status: "Active",
     dives: 241,
     description:
@@ -383,7 +397,7 @@ const diveSites: {
     barangay: "Batas",
     depth: "15–30 m",
     difficulty: "Rescue",
-    type: "Reef",
+    type: "Fun Dive",
     status: "Active",
     dives: 197,
     description:
@@ -398,7 +412,7 @@ const diveSites: {
     barangay: "Batas",
     depth: "8–18 m",
     difficulty: "Open Water",
-    type: "Reef",
+    type: "Intro Dive",
     status: "Active",
     dives: 168,
     description:
@@ -413,7 +427,7 @@ const diveSites: {
     barangay: "San Joaquin",
     depth: "22–38 m",
     difficulty: "Advanced",
-    type: "Wreck",
+    type: "Scuba",
     status: "Active",
     dives: 142,
     description:
@@ -428,7 +442,7 @@ const diveSites: {
     barangay: "Batas",
     depth: "10–45 m",
     difficulty: "Divemaster",
-    type: "Wall",
+    type: "Training",
     status: "Active",
     dives: 135,
     description:
@@ -442,8 +456,8 @@ const diveSites: {
     name: "Sepoc Point",
     barangay: "San Teodoro",
     depth: "5–20 m",
-    difficulty: "Open Water",
-    type: "Reef",
+    difficulty: "Intro",
+    type: "Training",
     status: "Active",
     dives: 118,
     description:
@@ -458,7 +472,7 @@ const diveSites: {
     barangay: "Solo",
     depth: "12–28 m",
     difficulty: "Advanced",
-    type: "Reef",
+    type: "Scuba",
     status: "Seasonal",
     dives: 96,
     description:
@@ -473,7 +487,7 @@ const diveSites: {
     barangay: "San Joaquin",
     depth: "30–50 m",
     difficulty: "Divemaster",
-    type: "Wreck",
+    type: "Training",
     status: "Restricted",
     dives: 54,
     description:
@@ -1323,23 +1337,6 @@ const ALL_NATIONALITIES = [
 ].sort();
 const ALL_LEVELS = [...new Set(tourists.map((t) => t.level))].sort();
 
-// Display-only flag emoji, derived client-side from nationality — never
-// stored in the DB (live tourist rows carry no flag field).
-const NATIONALITY_FLAGS: Record<string, string> = {
-  USA: "🇺🇸",
-  Japan: "🇯🇵",
-  Germany: "🇩🇪",
-  Sweden: "🇸🇪",
-  Brazil: "🇧🇷",
-  Mexico: "🇲🇽",
-  UK: "🇬🇧",
-  Italy: "🇮🇹",
-  UAE: "🇦🇪",
-};
-function flagFor(nationality: string | null | undefined): string {
-  if (!nationality) return "🏳️";
-  return NATIONALITY_FLAGS[nationality] ?? "🏳️";
-}
 const ALL_SITES = [...new Set(manifestos.map((m) => m.site))].sort();
 const ALL_OPERATOR_NAMES = [...new Set(receipts.map((r) => r.operator))].sort();
 const ALL_OPERATOR_BIZ = [...new Set(operatorApps.map((a) => a.name))].sort();
@@ -1354,11 +1351,13 @@ const FORWARD_RECIPIENTS = [
   { name: "Bantay Dagat HQ", email: "hq@bantaydagat.gov.ph" },
   { name: "Tourism Office — Batangas", email: "tourism@batangas.gov.ph" },
 ];
-const ALL_DIFFICULTIES = [
-  ...new Set(diveSites.map((s) => s.difficulty)),
-].sort();
-const ALL_SITE_TYPES = [...new Set(diveSites.map((s) => s.type))].sort();
-const ALL_BARANGAYS = [...new Set(diveSites.map((s) => s.barangay))].sort();
+// Canonical ordered taxonomies (src/lib/diveTaxonomy.ts) — explicit order,
+// never .sort()ed, so progression order survives in every dropdown/filter.
+const ALL_DIFFICULTIES = DIVE_DIFFICULTIES;
+const ALL_SITE_TYPES = DIVING_TYPES;
+// Canonical 34-barangay list (src/lib/barangays.ts) — data entry must offer
+// the full set even though rows only cover a few barangays.
+const ALL_BARANGAYS = MABINI_BARANGAYS;
 
 /* ------------------------------ URL HELPERS ------------------------------ */
 export function useFilters() {
@@ -1674,22 +1673,24 @@ const DiveSiteHeatmapLazy = lazy(() =>
 
 function ClientOnlyDiveSiteHeatmap({
   sites,
+  onSiteClick,
 }: {
   sites: React.ComponentProps<typeof DiveSiteHeatmapType>["sites"];
+  onSiteClick?: (site: any) => void;
 }) {
   const mounted = useMounted();
   if (!mounted) {
     return (
-      <div className="h-[420px] w-full rounded-xl border border-border/60 bg-muted" />
+      <div className="h-[clamp(320px,50dvh,520px)] w-full rounded-xl border border-border/60 bg-muted" />
     );
   }
   return (
     <Suspense
       fallback={
-        <div className="h-[420px] w-full rounded-xl border border-border/60 bg-muted" />
+        <div className="h-[clamp(320px,50dvh,520px)] w-full rounded-xl border border-border/60 bg-muted" />
       }
     >
-      <DiveSiteHeatmapLazy sites={sites} />
+      <DiveSiteHeatmapLazy sites={sites} onSiteClick={onSiteClick} />
     </Suspense>
   );
 }
@@ -3340,6 +3341,14 @@ function Overview({ session }: { session?: StaffSession | null }) {
                   : "810",
                 delta: ovLive ? tDelta.label : "+47",
                 up: ovLive ? tDelta.up : true,
+                target: {
+                  section: "tourists",
+                  q: "",
+                  status: "All",
+                  nationality: "All",
+                  level: "All",
+                  tab: "",
+                },
               },
               {
                 icon: UserCheck,
@@ -3352,6 +3361,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
                   : "358",
                 delta: ovLive ? aDelta.label : "+12",
                 up: ovLive ? aDelta.up : true,
+                target: { section: "tourists", status: "Active", q: "" },
               },
               {
                 icon: Waves,
@@ -3361,6 +3371,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
                   ? `${dayDiff >= 0 ? "+" : ""}${dayDiff}`
                   : "+6",
                 up: ovLive ? dayDiff >= 0 : true,
+                target: { section: "dive-ops", tab: "manifestos" },
               },
               {
                 icon: Building2,
@@ -3368,6 +3379,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
                 value: String(approvedCount),
                 delta: ovLive ? eDelta.label : "+3",
                 up: ovLive ? eDelta.up : true,
+                target: { section: "establishments", tab: "registered" },
               },
             {
               icon: MapPin,
@@ -3388,17 +3400,25 @@ function Overview({ session }: { session?: StaffSession | null }) {
                     siteBuckets[monthIdxPrev].count >=
                   0
                 : true,
+              target: { section: "dive-ops", tab: "sites", q: "" },
             },
             ];
             return cards.map((s) => (
-              <StatCard
+              <button
                 key={s.label}
-                icon={s.icon}
-                label={s.label}
-                value={s.value}
-                delta={s.delta}
-                up={s.up}
-              />
+                type="button"
+                aria-label={`View ${s.label}`}
+                onClick={() => setFilters(s.target)}
+                className="text-left w-full h-full cursor-pointer rounded-xl focus-visible:outline-2 focus-visible:outline-primary"
+              >
+                <StatCard
+                  icon={s.icon}
+                  label={s.label}
+                  value={s.value}
+                  delta={s.delta}
+                  up={s.up}
+                />
+              </button>
             ));
           })()}
         </div>
@@ -3429,6 +3449,9 @@ function Overview({ session }: { session?: StaffSession | null }) {
             }
           >
             <div className="h-72">
+              {isEmptyChartData(trendData) ? (
+                <ChartEmptyState className="h-72" />
+              ) : (
               <ResponsiveContainer>
                 <AreaChart
                   data={trendData}
@@ -3506,11 +3529,15 @@ function Overview({ session }: { session?: StaffSession | null }) {
                   />
                 </AreaChart>
               </ResponsiveContainer>
+              )}
             </div>
           </SectionCard>
 
           <SectionCard title="Nationality Mix">
             <div className="h-72">
+              {isEmptyChartData(scaledNationality) ? (
+                <ChartEmptyState className="h-72" />
+              ) : (
               <ResponsiveContainer>
                 <PieChart>
                   <Pie
@@ -3544,6 +3571,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
                   />
                 </PieChart>
               </ResponsiveContainer>
+              )}
             </div>
             <div className="mt-2 grid grid-cols-2 gap-1.5">
               {scaledNationality.map((n, i) => (
@@ -3568,6 +3596,9 @@ function Overview({ session }: { session?: StaffSession | null }) {
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-6">
           <SectionCard title="Dive Level">
             <div className="h-56">
+              {isEmptyChartData(scaledDiveLevel) ? (
+                <ChartEmptyState className="h-56" />
+              ) : (
               <ResponsiveContainer>
                 <RadialBarChart
                   innerRadius="30%"
@@ -3597,6 +3628,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
                   />
                 </RadialBarChart>
               </ResponsiveContainer>
+              )}
             </div>
             <div className="space-y-1.5 mt-1">
               {scaledDiveLevel.map((d, i) => (
@@ -3614,6 +3646,9 @@ function Overview({ session }: { session?: StaffSession | null }) {
 
           <SectionCard title="Dive Type">
             <div className="h-56">
+              {isEmptyChartData(scaledDiveType) ? (
+                <ChartEmptyState className="h-56" />
+              ) : (
               <ResponsiveContainer>
                 <BarChart
                   data={scaledDiveType}
@@ -3654,11 +3689,15 @@ function Overview({ session }: { session?: StaffSession | null }) {
                   />
                 </BarChart>
               </ResponsiveContainer>
+              )}
             </div>
           </SectionCard>
 
           <SectionCard title="Top Dive Sites" className="xl:col-span-2">
             <div className="h-56">
+              {isEmptyChartData(scaledTopSites) ? (
+                <ChartEmptyState className="h-56" />
+              ) : (
               <ResponsiveContainer>
                 <BarChart
                   data={scaledTopSites}
@@ -3709,6 +3748,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
                   </Bar>
                 </BarChart>
               </ResponsiveContainer>
+              )}
             </div>
           </SectionCard>
         </div>
@@ -3850,7 +3890,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
                   .map((t: any) => (
                     <TableRow key={t.id}>
                       <TableCell className="font-medium">
-                        {t.flag ?? flagFor(t.nationality)} {t.name}
+                        {t.name}
                       </TableCell>
                       <TableCell>
                         <Badge variant="outline" className="text-[10px]">
@@ -4109,7 +4149,6 @@ function Overview({ session }: { session?: StaffSession | null }) {
                     <TableRow key={t.id}>
                       <TableCell className="font-medium">{t.name}</TableCell>
                       <TableCell>
-                        {t.flag ?? flagFor(t.nationality)}{" "}
                         {t.nationality ?? "—"}
                       </TableCell>
                       <TableCell>
@@ -5248,7 +5287,6 @@ function TouristMgmt({ session }: { session?: StaffSession | null }) {
                   </TableCell>
                   <TableCell className="font-medium">{t.name}</TableCell>
                   <TableCell>
-                    {(t as any).flag ?? flagFor(t.nationality)}{" "}
                     {t.nationality ?? "—"}
                   </TableCell>
                   <TableCell>{t.level ?? "—"}</TableCell>
@@ -5315,7 +5353,7 @@ function TouristMgmt({ session }: { session?: StaffSession | null }) {
               <div className="grid grid-cols-2 gap-3 text-sm">
                 <Field
                   label="Nationality"
-                  value={`${viewing.flag ?? flagFor(viewing.nationality)} ${viewing.nationality ?? "—"}`}
+                  value={viewing.nationality ?? "—"}
                 />
                 <Field label="Dive Level" value={viewing.level ?? "—"} />
                 <Field label="Registered" value={viewing.registered} />
@@ -5374,7 +5412,7 @@ function TouristMgmt({ session }: { session?: StaffSession | null }) {
         open={!!touristDrilldown}
         onOpenChange={(o) => !o && setTouristDrilldown(null)}
         title={`${touristDrilldown?.name ?? ""} — Dive History`}
-        subtitle={`${touristDrilldown ? ((touristDrilldown as any).flag ?? flagFor(touristDrilldown.nationality)) : ""} ${touristDrilldown?.nationality ?? ""} · ${touristDrilldown?.level ?? ""}`}
+        subtitle={`${touristDrilldown?.nationality ?? "—"} · ${touristDrilldown?.level ?? "—"}`}
         stats={
           touristDrilldown
             ? [
@@ -5452,7 +5490,11 @@ function TouristMgmt({ session }: { session?: StaffSession | null }) {
 }
 
 /* ------------------------------ OPERATORS ------------------------------ */
-export function OperatorMgmt() {
+export function OperatorMgmt({
+  subTab = "applications",
+}: {
+  subTab?: "applications" | "active";
+} = {}) {
   const { canAct, deny } = usePermission();
   const { search, setFilters } = useFilters();
   const { visibleMonths } = useGlobalDateRange();
@@ -5481,8 +5523,6 @@ export function OperatorMgmt() {
     single: string | null;
   } | null>(null);
 
-  const currentTab = search.tab || "applications";
-
   const filteredApps = useMemo(() => {
     const monthSet = new Set(visibleMonths);
     return apps.filter((o) => {
@@ -5507,12 +5547,20 @@ export function OperatorMgmt() {
     });
   }, [apps, search.q, search.status, visibleMonths]);
 
+  // Review queue: approved applications graduate to the registry (and reappear
+  // under Active Operators), so they are dropped from the Applications table to
+  // keep "needs review" unambiguous. Rejected rows stay for the record/reopen.
+  const queueApps = useMemo(
+    () => filteredApps.filter((a) => a.status !== "Approved"),
+    [filteredApps]
+  );
+
   const {
     page: oPage,
     setPage: oSetPage,
     totalPages: oTotalPages,
     paged: oPaged,
-  } = usePagination(filteredApps, 10);
+  } = usePagination(queueApps, 10);
 
   const activeFilters: { key: string; label: string }[] = [];
   if (search.status !== "All")
@@ -5650,8 +5698,10 @@ export function OperatorMgmt() {
     );
   };
 
-  const pendingCount = apps.filter((a) => a.status === "Pending").length;
   const selectablePending = filteredApps.filter((a) => a.status === "Pending");
+  // Unfiltered pending count — distinguishes "nothing to review" from
+  // "filters hid everything".
+  const pendingTotal = apps.filter((a) => a.status === "Pending").length;
   const allSelected =
     selectablePending.length > 0 &&
     selectablePending.every((a) => selected.has(a.id));
@@ -5792,71 +5842,58 @@ export function OperatorMgmt() {
 
   return (
     <div className="space-y-4">
-      <Tabs value={currentTab} onValueChange={(v) => setFilters({ tab: v })}>
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex items-center gap-2">
-            <TabsList className="bg-secondary">
-              <TabsTrigger value="applications">
-                Applications
-                {pendingCount > 0 && (
-                  <Badge className="ml-2 h-5 px-1.5 bg-primary text-primary-foreground">
-                    {pendingCount}
-                  </Badge>
-                )}
-              </TabsTrigger>
-              <TabsTrigger value="active">Active Operators</TabsTrigger>
-            </TabsList>
-            <DataSourceBadge
-              live={isLiveData}
-              isError={liveApps.isError}
-              isLoading={liveApps.isFetching}
+      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <DataSourceBadge
+          live={isLiveData}
+          isError={liveApps.isError}
+          isLoading={liveApps.isFetching}
+        />
+        <div className="flex items-center gap-2">
+          <div className="relative">
+            <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              placeholder="Search by name, owner, or ID…"
+              value={search.q}
+              onChange={(e) => setFilters({ q: e.target.value })}
+              className="pl-9 h-8 w-[320px] text-sm"
             />
           </div>
-          <div className="flex items-center gap-2">
-            <div className="relative">
-              <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-              <Input
-                placeholder="Search by name, owner, or ID…"
-                value={search.q}
-                onChange={(e) => setFilters({ q: e.target.value })}
-                className="pl-9 h-8 w-[320px] text-sm"
-              />
-            </div>
-            <Select
-              value={search.status}
-              onValueChange={(v) => setFilters({ status: v })}
+          <Select
+            value={search.status}
+            onValueChange={(v) => setFilters({ status: v })}
+          >
+            <SelectTrigger className="w-36 h-8 text-sm">
+              <SelectValue placeholder="Status" />
+            </SelectTrigger>
+            <SelectContent>
+              {["All", "Pending", "Rejected"].map((s) => (
+                <SelectItem key={s} value={s}>
+                  {s}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          {activeFilters.length > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setFilters({ q: "", status: "All" })}
+              className="text-muted-foreground"
             >
-              <SelectTrigger className="w-36 h-8 text-sm">
-                <SelectValue placeholder="Status" />
-              </SelectTrigger>
-              <SelectContent>
-                {["All", "Pending", "Approved", "Rejected"].map((s) => (
-                  <SelectItem key={s} value={s}>
-                    {s}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-            {activeFilters.length > 0 && (
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setFilters({ q: "", status: "All" })}
-                className="text-muted-foreground"
-              >
-                <X className="size-3.5 mr-1" /> Clear
-              </Button>
-            )}
-          </div>
+              <X className="size-3.5 mr-1" /> Clear
+            </Button>
+          )}
         </div>
-        <TabsContent value="applications" className="mt-4">
+      </div>
+      {subTab === "applications" && (
+        <>
           <div className="space-y-3">
             <ActiveFilterBadges
               filters={activeFilters}
               onRemove={handleRemoveFilter}
             />
             <div className="text-xs text-muted-foreground">
-              {filteredApps.length} of {apps.length} application
+              {queueApps.length} of {apps.length} application
               {apps.length !== 1 ? "s" : ""}
             </div>
           </div>
@@ -5931,13 +5968,25 @@ export function OperatorMgmt() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredApps.length === 0 ? (
+                {queueApps.length === 0 ? (
                   <TableRow>
                     <TableCell
                       colSpan={8}
                       className="text-center py-8 text-muted-foreground"
                     >
-                      No applications match the current filters.
+                      {pendingTotal === 0 ? (
+                        <div className="flex flex-col items-center gap-1">
+                          <CheckCircle2 className="size-6 text-success" />
+                          <span className="font-medium text-foreground">
+                            No pending applications
+                          </span>
+                          <span className="text-xs">
+                            Every operator application has been reviewed.
+                          </span>
+                        </div>
+                      ) : (
+                        "No applications match the current filters."
+                      )}
                     </TableCell>
                   </TableRow>
                 ) : (
@@ -6089,8 +6138,10 @@ export function OperatorMgmt() {
               className="mt-4 px-4"
             />
           </Card>
-        </TabsContent>
-        <TabsContent value="active" className="mt-4">
+        </>
+      )}
+      {subTab === "active" && (
+        <>
           {(() => {
             const activeOps = apps.filter((a) => a.status === "Approved");
             return activeOps.length === 0 ? (
@@ -6154,8 +6205,8 @@ export function OperatorMgmt() {
               </div>
             );
           })()}
-        </TabsContent>
-      </Tabs>
+        </>
+      )}
 
       <RejectReasonDialog
         open={!!rejectDialog}
@@ -6196,10 +6247,16 @@ export function ReceiptVerification() {
     }
   }, [liveReceipts.isError]);
 
+  const lightboxReqRef = useRef(0);
   const openLightbox = async (r: any) => {
+    // Close the details dialog first so only one modal is ever open —
+    // otherwise closing the lightbox reveals the details dialog underneath.
+    setViewing(null);
+    const req = ++lightboxReqRef.current;
     if (isLive && r?.receiptPath && !r?.imageUrl) {
       try {
         const url = await getReceiptUrl(r.receiptPath);
+        if (req !== lightboxReqRef.current) return;
         if (url) {
           setLightbox({ ...r, imageUrl: url });
         } else {
@@ -6209,6 +6266,7 @@ export function ReceiptVerification() {
           });
         }
       } catch (e) {
+        if (req !== lightboxReqRef.current) return;
         setLightbox({ ...r, imageError: true });
         toast.error("Could not load receipt image", {
           description: dbErrorMessage(e),
@@ -6267,6 +6325,41 @@ export function ReceiptVerification() {
     totalPages: rTotalPages,
     paged: rPaged,
   } = usePagination(filtered, 12);
+
+  // Preload real signed-URL thumbnails for visible receipts (live mode only).
+  // Mock rows carry no receiptPath and keep the stylized placeholder.
+  const [thumbUrls, setThumbUrls] = useState<Record<string, string>>({});
+  useEffect(() => {
+    if (!isLive) return;
+    const missing = rPaged.filter(
+      (r: any) => r?.receiptPath && !thumbUrls[r.id],
+    ) as any[];
+    if (missing.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      const entries = await Promise.all(
+        missing.map(async (r: any) => {
+          try {
+            const url = await getReceiptUrl(r.receiptPath);
+            return [r.id, url] as const;
+          } catch {
+            return [r.id, null] as const;
+          }
+        }),
+      );
+      if (cancelled) return;
+      const next: Record<string, string> = {};
+      for (const [id, url] of entries) {
+        if (url) next[id] = url;
+      }
+      if (Object.keys(next).length > 0) {
+        setThumbUrls((prev) => ({ ...prev, ...next }));
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isLive, rPaged, thumbUrls]);
 
   const activeFilters: { key: string; label: string }[] = [];
   if (search.status !== "All")
@@ -6653,46 +6746,35 @@ export function ReceiptVerification() {
                 }`}
               >
                 <div className="relative">
-                  <div
-                    className="absolute top-3 left-3 z-10"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    <div className="bg-background/80 backdrop-blur-sm rounded-md p-0.5">
-                      <Checkbox
-                        checked={selected.has(r.id)}
-                        onCheckedChange={() => toggleSelect(r.id)}
-                        disabled={r.status !== "Pending"}
-                        aria-label={`Select receipt ${r.id}`}
-                      />
-                    </div>
-                  </div>
                   <button
                     onClick={() => openLightbox(r)}
+                    aria-label={`Open receipt ${r.id} image`}
                     className="block w-full aspect-[4/3] bg-gradient-to-br from-primary-soft to-secondary relative cursor-zoom-in"
                   >
-                    <div className="absolute inset-0 flex items-center justify-center text-primary/40">
-                      <ImageIcon className="size-16" />
-                    </div>
-                    <div className="absolute bottom-3 right-3 z-10 rounded-full bg-background/90 backdrop-blur border border-border/60 p-2 text-muted-foreground shadow-sm hover:text-primary">
-                      <ZoomIn className="size-4" />
-                    </div>
-                    <div
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setViewing(r);
-                      }}
-                      className="absolute bottom-3 left-3 z-10 rounded-full bg-background/90 backdrop-blur border border-border/60 p-2 text-muted-foreground shadow-sm hover:text-primary cursor-pointer"
-                      title="Receipt details"
+                    {thumbUrls[r.id] ? (
+                      <img
+                        src={thumbUrls[r.id]}
+                        alt={`Receipt ${r.ref}`}
+                        className="absolute inset-0 h-full w-full object-cover"
+                      />
+                    ) : (
+                      <span className="absolute inset-0 flex items-center justify-center text-primary/40">
+                        <ImageIcon className="size-16" />
+                      </span>
+                    )}
+                    <span
+                      aria-hidden
+                      className="absolute bottom-3 right-3 z-10 rounded-full bg-background/90 backdrop-blur border border-border/60 p-2 text-muted-foreground shadow-sm"
                     >
-                      <Eye className="size-4" />
-                    </div>
+                      <ZoomIn className="size-4" />
+                    </span>
                     {r.rejectReason && (
                       <div className="absolute bottom-14 left-3 right-3 z-10 rounded-lg bg-destructive/90 backdrop-blur text-destructive-foreground text-[11px] px-3 py-1.5 shadow-glow">
                         Rejected: {r.rejectReason}
                       </div>
                     )}
                     {settled && (
-                      <div className="absolute inset-0 flex items-center justify-center backdrop-blur-[2px] bg-background/40">
+                      <div className="absolute inset-0 flex items-center justify-center backdrop-blur-[2px] bg-background/40 pointer-events-none">
                         <div
                           className={`flex items-center gap-2 px-4 py-2 rounded-full font-semibold text-sm shadow-glow ${
                             approved
@@ -6709,14 +6791,29 @@ export function ReceiptVerification() {
                         </div>
                       </div>
                     )}
-                    <div className="absolute top-3 right-3">
+                    <div className="absolute top-3 right-3 pointer-events-none">
                       <StatusBadge status={r.status} />
                     </div>
                   </button>
                 </div>
                 <div className="p-4 space-y-2">
-                  <div className="flex items-center justify-between">
-                    <div className="font-medium">{r.operator}</div>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Checkbox
+                        checked={selected.has(r.id)}
+                        onCheckedChange={() => toggleSelect(r.id)}
+                        disabled={r.status !== "Pending"}
+                        aria-label={`Select receipt ${r.id}`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setViewing(r)}
+                        title="View receipt details"
+                        className="font-medium truncate text-left hover:text-primary hover:underline underline-offset-2 transition-colors"
+                      >
+                        {r.operator}
+                      </button>
+                    </div>
                     <div className="font-display font-bold">{r.amount}</div>
                   </div>
                   <div className="flex items-center justify-between text-xs text-muted-foreground">
@@ -6781,7 +6878,7 @@ export function ReceiptVerification() {
       </div>
 
       <Dialog open={!!viewing} onOpenChange={(o) => !o && setViewing(null)}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="w-[min(92vw,24rem)] sm:w-[min(92vw,28rem)] max-w-none max-h-[90dvh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Receipt {viewing?.id}</DialogTitle>
           </DialogHeader>
@@ -6789,9 +6886,18 @@ export function ReceiptVerification() {
             <div className="space-y-4">
               <button
                 onClick={() => viewing && openLightbox(viewing)}
-                className="aspect-video w-full rounded-xl bg-gradient-to-br from-primary-soft to-secondary flex items-center justify-center text-primary/40 relative cursor-zoom-in"
+                aria-label={`Open receipt ${viewing?.id} image`}
+                className="aspect-video max-h-[32dvh] w-full rounded-xl bg-gradient-to-br from-primary-soft to-secondary flex items-center justify-center text-primary/40 relative cursor-zoom-in overflow-hidden"
               >
-                <ImageIcon className="size-20" />
+                {thumbUrls[viewing?.id] ? (
+                  <img
+                    src={thumbUrls[viewing?.id]}
+                    alt={`Receipt ${viewing?.ref}`}
+                    className="absolute inset-0 h-full w-full object-cover"
+                  />
+                ) : (
+                  <ImageIcon className="size-20" />
+                )}
                 <div className="absolute bottom-3 right-3 rounded-full bg-background/90 backdrop-blur border border-border/60 p-2 text-muted-foreground shadow-sm">
                   <ZoomIn className="size-4" />
                 </div>
@@ -6811,7 +6917,7 @@ export function ReceiptVerification() {
                   statement before approving.
                 </span>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3">
                 <Field label="Operator" value={viewing.operator} />
                 <Field label="Reference #" value={viewing.ref} />
                 <Field label="Amount" value={viewing.amount} />
@@ -6863,7 +6969,14 @@ export function ReceiptVerification() {
       />
       <ReceiptLightbox
         open={!!lightbox}
-        onOpenChange={(o) => !o && setLightbox(null)}
+        onOpenChange={(o) => {
+          if (!o) {
+            // Invalidate any in-flight signed-URL fetch so it can't
+            // reopen the modal seconds after close.
+            lightboxReqRef.current++;
+            setLightbox(null);
+          }
+        }}
         receipt={lightbox}
       />
     </div>
@@ -7686,7 +7799,7 @@ function ForwardForm({
 // render code below works on both sources unchanged.
 const toSiteView = (s: any) => ({
   _dbId: s._dbId,
-  id: s.siteCode ?? s.id,
+  id: s.siteCode ?? s.id ?? "—",
   name: s.name,
   barangay: s.barangay ?? "—",
   depth: s.depthRange ?? s.depth ?? "—",
@@ -7750,13 +7863,7 @@ function SitePhoto({
   return <img src={url} alt={alt} className={className} />;
 }
 
-export function DiveSiteMgmt({
-  hideHeader = false,
-  forcedTab,
-}: {
-  hideHeader?: boolean;
-  forcedTab?: string;
-} = {}) {
+export function DiveSiteMgmt() {
   const { canAct, canAdmin, deny } = usePermission();
   const { search, setFilters, resetFilters } = useFilters();
   const [viewing, setViewing] = useState<any>(null);
@@ -7789,7 +7896,7 @@ export function DiveSiteMgmt({
     barangay: "",
     depth: "",
     difficulty: "Open Water",
-    type: "Reef",
+    type: "Scuba",
     description: "",
     lat: "13.7620",
     lng: "120.9210",
@@ -7801,7 +7908,6 @@ export function DiveSiteMgmt({
   const [toggling, setToggling] = useState<Record<string, boolean>>({});
   const [siteErrors, setSiteErrors] = useState<Record<string, string>>({});
   const fileRef = useRef<HTMLInputElement>(null);
-  const [drillSite, setDrillSite] = useState<any>(null);
 
   const filtered = useMemo(() => {
     return sites.filter((s) => {
@@ -7822,28 +7928,6 @@ export function DiveSiteMgmt({
     });
   }, [sites, search.q, search.status, search.difficulty, search.siteType]);
 
-  // Site usage: live mode counts divers from this month's manifests per
-  // site (matching the "This Month" title); mock mode ranks all-time totals.
-  const siteUsage = useMemo(() => {
-    if (isLiveData && liveManifestsDs.data) {
-      const cur = new Date().getMonth();
-      const sums = new Map<string, number>();
-      for (const m of liveManifestsDs.data) {
-        const d = new Date(m.date + "T00:00:00");
-        if (Number.isNaN(d.getTime()) || d.getMonth() !== cur) continue;
-        sums.set(m.site, (sums.get(m.site) || 0) + (m.divers || 0));
-      }
-      return [...sums.entries()]
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, 8)
-        .map(([name, value]) => ({ name, value }));
-    }
-    return [...sites]
-      .sort((a, b) => b.dives - a.dives)
-      .slice(0, 8)
-      .map((s) => ({ name: s.name, value: s.dives }));
-  }, [isLiveData, liveManifestsDs.data, sites]);
-
   // Filter options follow the data source (live distinct values when live).
   const difficultyOptions = useMemo(
     () =>
@@ -7857,13 +7941,6 @@ export function DiveSiteMgmt({
       isLiveData
         ? [...new Set(sites.map((s) => s.type).filter((t) => t !== "—"))].sort()
         : ALL_SITE_TYPES,
-    [isLiveData, sites]
-  );
-  const barangayOptions = useMemo(
-    () =>
-      isLiveData
-        ? [...new Set(sites.map((s) => s.barangay).filter((b) => b !== "—"))].sort()
-        : ALL_BARANGAYS,
     [isLiveData, sites]
   );
 
@@ -7924,7 +8001,7 @@ export function DiveSiteMgmt({
       barangay: "",
       depth: "",
       difficulty: "Open Water",
-      type: "Reef",
+      type: "Scuba",
       description: "",
       lat: "13.7620",
       lng: "120.9210",
@@ -8014,7 +8091,7 @@ export function DiveSiteMgmt({
       barangay: site.barangay && site.barangay !== "—" ? site.barangay : "",
       depth: site.depth && site.depth !== "—" ? site.depth : "",
       difficulty: site.difficulty && site.difficulty !== "—" ? site.difficulty : "Open Water",
-      type: site.type && site.type !== "—" ? site.type : "Reef",
+      type: site.type && site.type !== "—" ? site.type : "Scuba",
       description: site.description ?? "",
       lat: site.lat != null ? String(site.lat) : "",
       lng: site.lng != null ? String(site.lng) : "",
@@ -8231,25 +8308,9 @@ export function DiveSiteMgmt({
     );
   };
 
-  const effectiveTab =
-    forcedTab ?? (search.tab === "analytics" ? "analytics" : "sites");
-
   return (
     <>
-      <Tabs
-        value={effectiveTab}
-        onValueChange={(v) => setFilters({ tab: v })}
-      >
-        {!hideHeader && (
-          <div className="flex flex-col md:flex-row md:items-center gap-3 mb-4">
-            <TabsList className="bg-secondary">
-              <TabsTrigger value="sites">Sites</TabsTrigger>
-              <TabsTrigger value="analytics">Analytics</TabsTrigger>
-            </TabsList>
-          </div>
-        )}
-
-        <TabsContent value="sites" className="mt-0 space-y-4">
+      <div className="space-y-4">
           {/* Search & Filters */}
           <div className="flex flex-col gap-3">
             <div className="flex items-center gap-2">
@@ -8471,16 +8532,25 @@ export function DiveSiteMgmt({
             </Table>
           </Card>
 
+          <SectionCard title="Dive Site Heatmap — Mabini, Batangas">
+            <ClientOnlyDiveSiteHeatmap
+              sites={filtered}
+              onSiteClick={(s) =>
+                setViewing(sites.find((f) => f.name === s.name) ?? s)
+              }
+            />
+          </SectionCard>
+
           {/* Detail Dialog */}
           <Dialog open={!!viewing} onOpenChange={(o) => !o && setViewing(null)}>
-            <DialogContent className="max-w-lg">
+            <DialogContent className="w-[min(92vw,36rem)] max-w-none max-h-[90dvh] overflow-y-auto overflow-x-hidden">
               <DialogHeader>
                 <DialogTitle>Dive Site Details</DialogTitle>
               </DialogHeader>
               {viewing && (
-                <div className="space-y-4">
+                <div className="space-y-5">
                   {viewing.photo || viewing.photoPath ? (
-                    <div className="w-full aspect-video rounded-xl overflow-hidden bg-secondary">
+                    <div className="w-full aspect-video max-h-[30dvh] rounded-xl overflow-hidden bg-secondary">
                       <SitePhoto
                         photo={viewing.photo}
                         photoPath={viewing.photoPath}
@@ -8489,7 +8559,7 @@ export function DiveSiteMgmt({
                       />
                     </div>
                   ) : (
-                    <div className="w-full aspect-video rounded-xl gradient-primary relative overflow-hidden flex items-center justify-center">
+                    <div className="w-full aspect-video max-h-[30dvh] rounded-xl gradient-primary relative overflow-hidden flex items-center justify-center">
                       <div
                         className="absolute inset-0 opacity-25"
                         style={{
@@ -8500,35 +8570,35 @@ export function DiveSiteMgmt({
                       <MapPin className="size-16 text-primary-foreground/40" />
                     </div>
                   )}
-                  <div className="flex items-center gap-4">
+                  <div className="flex flex-wrap items-center gap-4">
                     <div className="size-14 rounded-xl gradient-primary flex items-center justify-center text-primary-foreground shrink-0">
                       <MapPin className="size-7" />
                     </div>
-                    <div>
-                      <div className="font-display text-lg font-semibold">
+                    <div className="min-w-0 flex-1">
+                      <div className="font-display text-lg font-semibold truncate">
                         {viewing.name}
                       </div>
-                      <div className="text-xs text-muted-foreground font-mono">
+                      <div className="text-xs text-muted-foreground font-mono truncate">
                         {viewing.id}
                       </div>
                     </div>
                     <Badge
                       variant="outline"
-                      className={
+                      className={`shrink-0 ${
                         viewing.status === "Active"
                           ? "bg-success/10 text-success border-success/20"
                           : viewing.status === "Seasonal"
                             ? "bg-warning/15 text-warning-foreground border-warning/30"
                             : "bg-muted text-muted-foreground border-border"
-                      }
+                      }`}
                     >
                       {viewing.status}
                     </Badge>
                   </div>
-                  <p className="text-sm text-muted-foreground">
+                  <p className="text-sm leading-relaxed text-muted-foreground break-words">
                     {viewing.description}
                   </p>
-                  <div className="grid grid-cols-2 gap-3 text-sm">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3 text-sm">
                     <Field label="Barangay" value={viewing.barangay} />
                     <Field label="Depth Range" value={viewing.depth} />
                     <Field label="Difficulty" value={viewing.difficulty} />
@@ -8542,10 +8612,10 @@ export function DiveSiteMgmt({
                       }
                     />
                   </div>
-                  <div className="flex gap-2 pt-2">
+                  <div className="flex flex-col sm:flex-row gap-2 pt-2">
                     <Button
                       variant="outline"
-                      className="flex-1"
+                      className="w-full sm:flex-1"
                       onClick={() => {
                         setViewing(null);
                         openEdit(viewing);
@@ -8555,7 +8625,7 @@ export function DiveSiteMgmt({
                     </Button>
                     <Button
                       variant="outline"
-                      className="flex-1"
+                      className="w-full sm:flex-1"
                       disabled={!!toggling[viewing.id]}
                       onClick={() => {
                         setViewing(null);
@@ -8570,7 +8640,7 @@ export function DiveSiteMgmt({
                     {canAdmin && (
                       <Button
                         variant="outline"
-                        className="flex-1 border-destructive/30 text-destructive hover:bg-destructive/10"
+                        className="w-full sm:flex-1 border-destructive/30 text-destructive hover:bg-destructive/10"
                         onClick={() => {
                           setViewing(null);
                           attemptDelete(viewing);
@@ -8579,12 +8649,6 @@ export function DiveSiteMgmt({
                         <Trash2 className="size-4 mr-1.5" /> Delete
                       </Button>
                     )}
-                    <Button
-                      className="flex-1 gradient-primary text-primary-foreground"
-                      onClick={() => setViewing(null)}
-                    >
-                      Close
-                    </Button>
                   </div>
                 </div>
               )}
@@ -8599,13 +8663,18 @@ export function DiveSiteMgmt({
               else setAddOpen(true);
             }}
           >
-            <DialogContent className="max-w-lg">
+            <DialogContent className="w-[min(92vw,36rem)] max-w-none max-h-[90dvh] overflow-y-auto overflow-x-hidden">
               <DialogHeader>
                 <DialogTitle>
                   {editTarget ? "Edit Dive Site" : "Add Dive Site"}
                 </DialogTitle>
+                <p className="text-sm text-muted-foreground">
+                  {editTarget
+                    ? `Update details for ${editTarget.name} (${editTarget.id}).`
+                    : "Register a new dive site with its location and details."}
+                </p>
               </DialogHeader>
-              <div className="space-y-4">
+              <div className="space-y-5">
                 <input
                   ref={fileRef}
                   type="file"
@@ -8614,7 +8683,7 @@ export function DiveSiteMgmt({
                   onChange={onPhotoPick}
                 />
                 <div
-                  className="relative rounded-xl border-2 border-dashed border-border hover:border-primary/50 transition-colors cursor-pointer overflow-hidden group"
+                  className="relative rounded-xl border-2 border-dashed border-border hover:border-primary/50 transition-colors cursor-pointer overflow-hidden group max-h-[28dvh]"
                   onClick={() => fileRef.current?.click()}
                 >
                   {newSite.photo ? (
@@ -8622,7 +8691,7 @@ export function DiveSiteMgmt({
                       <img
                         src={newSite.photo}
                         alt="Site photo"
-                        className="w-full aspect-video object-cover"
+                        className="w-full aspect-video max-h-[28dvh] object-cover"
                       />
                       <button
                         type="button"
@@ -8643,8 +8712,8 @@ export function DiveSiteMgmt({
                       </div>
                     </>
                   ) : (
-                    <div className="w-full aspect-video flex flex-col items-center justify-center gap-2 text-muted-foreground">
-                      <ImageIcon className="size-10" />
+                    <div className="w-full aspect-video max-h-[28dvh] flex flex-col items-center justify-center gap-1.5 text-muted-foreground">
+                      <ImageIcon className="size-8" />
                       <span className="text-sm font-medium">
                         Click to upload a photo
                       </span>
@@ -8656,16 +8725,16 @@ export function DiveSiteMgmt({
                   !newSite.photo &&
                   !clearPhoto &&
                   (editTarget.photo || editTarget.photoPath) && (
-                    <div className="flex items-center gap-3 rounded-xl border border-border/60 bg-secondary/40 px-3 py-2">
+                    <div className="flex items-center gap-3 rounded-xl border border-border/60 bg-secondary/40 px-3 py-2 min-w-0">
                       <SitePhoto
                         photo={editTarget.photo}
                         photoPath={editTarget.photoPath}
                         alt={editTarget.name}
-                        className="size-10 rounded-lg object-cover"
+                        className="size-10 rounded-lg object-cover shrink-0"
                       />
                       <div className="flex-1 min-w-0">
-                        <div className="text-xs font-medium">Current photo</div>
-                        <div className="text-[11px] text-muted-foreground">
+                        <div className="text-xs font-medium truncate">Current photo</div>
+                        <div className="text-[11px] text-muted-foreground truncate">
                           Upload above to replace
                         </div>
                       </div>
@@ -8673,7 +8742,7 @@ export function DiveSiteMgmt({
                         type="button"
                         size="sm"
                         variant="ghost"
-                        className="text-destructive"
+                        className="text-destructive shrink-0"
                         onClick={() => setClearPhoto(true)}
                       >
                         <X className="size-4 mr-1" /> Remove
@@ -8686,7 +8755,7 @@ export function DiveSiteMgmt({
                     replace it instead.
                   </p>
                 )}
-                <div className="grid grid-cols-2 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
                   <div className="space-y-1.5">
                     <Label>
                       Site Name <span className="text-destructive">*</span>
@@ -8890,7 +8959,8 @@ export function DiveSiteMgmt({
                       setNewSite({ ...newSite, description: e.target.value })
                     }
                     placeholder="Brief site description…"
-                    rows={2}
+                    rows={3}
+                    className="resize-y max-h-40"
                   />
                 </div>
                 <DialogFooter>
@@ -8940,9 +9010,11 @@ export function DiveSiteMgmt({
                   Permanently delete{" "}
                   <span className="font-medium text-foreground">
                     {deleteTarget?.name}
-                  </span>{" "}
-                  ({deleteTarget?.id})? No manifestos reference it. This
-                  cannot be undone.
+                  </span>
+                  {deleteTarget?.id && deleteTarget.id !== "—"
+                    ? ` (${deleteTarget.id})`
+                    : ""}
+                  ? No manifestos reference it. This cannot be undone.
                 </p>
               </DialogHeader>
               <DialogFooter>
@@ -8968,216 +9040,8 @@ export function DiveSiteMgmt({
               </DialogFooter>
             </DialogContent>
           </Dialog>
-        </TabsContent>
+      </div>
 
-        <TabsContent value="analytics" className="mt-0">
-          <div className="space-y-6">
-            <SectionCard title="Dive Site Heatmap — Mabini, Batangas">
-              <ClientOnlyDiveSiteHeatmap sites={filtered} />
-            </SectionCard>
-
-              <SectionCard title="Site Usage This Month">
-                <Table>
-                  <TableHeader>
-                    <TableRow className="bg-secondary/50">
-                      <TableHead>Rank</TableHead>
-                      <TableHead>Site</TableHead>
-                      <TableHead>Dives</TableHead>
-                      <TableHead>Unique Divers</TableHead>
-                      <TableHead>Trend</TableHead>
-                      <TableHead>Popularity</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {siteUsage.map((s, i) => (
-                      <TableRow
-                        key={s.name}
-                        className="cursor-pointer hover:bg-secondary/50 transition-colors"
-                        onClick={() => setDrillSite(s)}
-                      >
-                        <TableCell className="font-mono">#{i + 1}</TableCell>
-                        <TableCell className="font-medium flex items-center gap-2">
-                          <MapPin className="size-4 text-primary" /> {s.name}
-                        </TableCell>
-                        <TableCell>{s.value}</TableCell>
-                        <TableCell>{Math.round(s.value * 0.7)}</TableCell>
-                        <TableCell>
-                          <span className="text-success inline-flex items-center gap-0.5 text-xs">
-                            <TrendingUp className="size-3" />+{5 + i * 2}%
-                          </span>
-                        </TableCell>
-                        <TableCell>
-                          <div className="w-40 h-2 rounded-full bg-secondary overflow-hidden">
-                            <div
-                              className="h-full gradient-primary"
-                              style={{
-                                width: `${((s.value / (siteUsage[0]?.value || 1)) * 100).toFixed(1)}%`,
-                              }}
-                            />
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </SectionCard>
-          </div>
-        </TabsContent>
-      </Tabs>
-
-      <DrilldownDialog
-        open={!!drillSite}
-        onOpenChange={(o) => !o && setDrillSite(null)}
-        title={drillSite?.name ?? ""}
-        subtitle="Site analytics detail"
-        stats={
-          drillSite
-            ? [
-                { label: "Total dives", value: drillSite.value, icon: Waves },
-                {
-                  label: "Rank",
-                  value: `#${siteUsage.findIndex((s) => s.name === drillSite.name) + 1}`,
-                  icon: TrendingUp,
-                },
-                {
-                  label: "Share",
-                  value: `${((drillSite.value / (siteUsage.reduce((a, s) => a + s.value, 0) || 1)) * 100).toFixed(1)}%`,
-                  icon: BarChart3,
-                },
-              ]
-            : undefined
-        }
-      >
-        {drillSite &&
-          (() => {
-            const site = sites.find((s) => s.name === drillSite.name);
-            return site ? (
-              <div className="space-y-4 mt-2">
-                <Card className="p-4 shadow-elegant">
-                  <h4 className="font-display font-semibold text-sm mb-3">
-                    Site information
-                  </h4>
-                  <Table>
-                    <TableHeader>
-                      <TableRow className="bg-secondary/50">
-                        <TableHead>Property</TableHead>
-                        <TableHead>Value</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      <TableRow>
-                        <TableCell className="text-muted-foreground">
-                          Barangay
-                        </TableCell>
-                        <TableCell className="font-medium">
-                          {site.barangay}
-                        </TableCell>
-                      </TableRow>
-                      <TableRow>
-                        <TableCell className="text-muted-foreground">
-                          Depth range
-                        </TableCell>
-                        <TableCell className="font-medium">
-                          {site.depth}
-                        </TableCell>
-                      </TableRow>
-                      <TableRow>
-                        <TableCell className="text-muted-foreground">
-                          Difficulty
-                        </TableCell>
-                        <TableCell className="font-medium">
-                          {site.difficulty}
-                        </TableCell>
-                      </TableRow>
-                      <TableRow>
-                        <TableCell className="text-muted-foreground">
-                          Type
-                        </TableCell>
-                        <TableCell className="font-medium">
-                          {site.type}
-                        </TableCell>
-                      </TableRow>
-                      <TableRow>
-                        <TableCell className="text-muted-foreground">
-                          Status
-                        </TableCell>
-                        <TableCell className="font-medium">
-                          {site.status}
-                        </TableCell>
-                      </TableRow>
-                      <TableRow>
-                        <TableCell className="text-muted-foreground">
-                          Unique divers
-                        </TableCell>
-                        <TableCell className="font-medium">
-                          {/* Estimate: manifest divers carry no tourist link,
-                              so per-site uniqueness can't be counted. */}
-                          {Math.round(site.dives * 0.7)}
-                        </TableCell>
-                      </TableRow>
-                      <TableRow>
-                        <TableCell className="text-muted-foreground">
-                          Description
-                        </TableCell>
-                        <TableCell className="text-sm">
-                          {site.description}
-                        </TableCell>
-                      </TableRow>
-                    </TableBody>
-                  </Table>
-                </Card>
-                <Card className="p-4 shadow-elegant">
-                  <h4 className="font-display font-semibold text-sm mb-3">
-                    Recent manifestos at this site
-                  </h4>
-                  <Table>
-                    <TableHeader>
-                      <TableRow className="bg-secondary/50">
-                        <TableHead>ID</TableHead>
-                        <TableHead>Operator</TableHead>
-                        <TableHead>Divers</TableHead>
-                        <TableHead>Date</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {(liveManifestsDs.data ?? manifestos)
-                        .filter((m: any) => m.site === site.name)
-                        .map((m: any) => (
-                          <TableRow key={m.id}>
-                            <TableCell className="font-mono text-xs">
-                              {m.id}
-                            </TableCell>
-                            <TableCell className="font-medium">
-                              {m.operator}
-                            </TableCell>
-                            <TableCell>{m.divers}</TableCell>
-                            <TableCell className="text-muted-foreground">
-                              {m.date}
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      {manifestos.filter((m) => m.site === site.name).length ===
-                        0 && (
-                        <TableRow>
-                          <TableCell
-                            colSpan={4}
-                            className="text-center text-muted-foreground py-4"
-                          >
-                            No recent manifestos.
-                          </TableCell>
-                        </TableRow>
-                      )}
-                    </TableBody>
-                  </Table>
-                </Card>
-              </div>
-            ) : (
-              <Card className="p-6 shadow-elegant mt-2 text-center text-muted-foreground">
-                Site not found in registry.
-              </Card>
-            );
-          })()}
-      </DrilldownDialog>
     </>
   );
 }
@@ -9186,6 +9050,7 @@ export function DiveSiteMgmt({
 export function OperatorAnalytics() {
   const { scale } = useGlobalDateRange();
   const { setFilters } = useFilters();
+  const isLive = useLiveMode();
   const [drillOperator, setDrillOperator] = useState<any>(null);
   // Live per-operator performance (React Query cache — no extra fetch):
   // manifest counts + diver sums from dive_manifests, credit use/purchase
@@ -9193,7 +9058,6 @@ export function OperatorAnalytics() {
   // replaces the mock's fixed 18.5/7.2/4200 multipliers with real math.
   const liveManifestsOp = useManifestsLive();
   const liveInventoryOp = useInventoryLive();
-  const opLive = !!(liveManifestsOp.data && liveInventoryOp.data);
   const liveOperatorRows = useMemo(() => {
     if (!liveManifestsOp.data || !liveInventoryOp.data) return null;
     const map = new Map<
@@ -9242,12 +9106,14 @@ export function OperatorAnalytics() {
   const opManifests = liveManifestsOp.data ?? manifestos;
   const scaledOperatorActivity = useMemo(() => {
     if (liveOperatorRows) return liveOperatorRows;
+    // Live mode with no rows yet must show an empty state, never mock.
+    if (isLive) return [];
     return operatorActivity.map((o) => ({
       ...o,
       manifestos: Math.round(o.manifestos * Math.min(scale * 3, 1)),
       credits: Math.round(o.credits * Math.min(scale * 3, 1)),
     }));
-  }, [liveOperatorRows, scale]);
+  }, [liveOperatorRows, scale, isLive]);
 
   const operatorInsight = useMemo(() => {
     const rows = liveOperatorRows ?? [];
@@ -9283,12 +9149,121 @@ export function OperatorAnalytics() {
     });
   }, [liveOperatorRows, liveInventoryOp.data, liveManifestsOp.data]);
 
+  const opKpis = useMemo(() => {
+    const cur = new Date().getMonth();
+    const prev = (cur + 11) % 12;
+    const mom = (b: any[] | null, key: "count" | "total") =>
+      b ? (b[cur]?.[key] ?? 0) - (b[prev]?.[key] ?? 0) : 0;
+    const mb = liveManifestsOp.data
+      ? bucketByMonth(liveManifestsOp.data, (m: any) => m.date)
+      : null;
+    const db = liveManifestsOp.data
+      ? bucketByMonth(
+          liveManifestsOp.data,
+          (m: any) => m.date,
+          (m: any) => m.divers || 0
+        )
+      : null;
+    const rb = liveInventoryOp.data
+      ? bucketByMonth(
+          liveInventoryOp.data,
+          (inv: any) => inv.createdAt,
+          (inv: any) => inv.amount || 0
+        )
+      : null;
+
+    if (liveOperatorRows) {
+      return {
+        live: true,
+        active: liveOperatorRows.filter((r) => r.manifestos > 0).length,
+        manifestos: liveOperatorRows.reduce((a, r) => a + r.manifestos, 0),
+        divers: liveOperatorRows.reduce((a, r) => a + r.divers, 0),
+        revenue: liveOperatorRows.reduce((a, r) => a + r.revenue, 0),
+        mDelta: mom(mb, "count"),
+        dDelta: mom(db, "total"),
+        rDelta: mom(rb, "total"),
+      };
+    }
+    // Live mode with no rows yet: show zeros, never mock figures.
+    if (isLive) {
+      return {
+        live: true,
+        active: 0,
+        manifestos: 0,
+        divers: 0,
+        revenue: 0,
+        mDelta: 0,
+        dDelta: 0,
+        rDelta: 0,
+      };
+    }
+    const manifestos = operatorActivity.reduce((a, o) => a + o.manifestos, 0);
+    return {
+      live: false,
+      active: operatorActivity.length,
+      manifestos,
+      divers: Math.round(manifestos * 7.2),
+      revenue: manifestos * 4200,
+      mDelta: 0,
+      dDelta: 0,
+      rDelta: 0,
+    };
+  }, [
+    liveOperatorRows,
+    liveManifestsOp.data,
+    liveInventoryOp.data,
+    isLive,
+  ]);
+
+  const kpiDelta = (delta: number) =>
+    delta === 0 && !opKpis.live
+      ? ""
+      : `${delta >= 0 ? "+" : ""}${delta}`;
+
   return (
     <div className="relative">
       <InsightWidget insight={operatorInsight} label="Operators" />
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <StatCard
+          icon={Users}
+          label="Active Operators"
+          value={String(opKpis.active)}
+          delta=""
+        />
+        <StatCard
+          icon={ScrollText}
+          label="Manifestos Filed"
+          value={opKpis.manifestos.toLocaleString()}
+          delta={opKpis.live ? kpiDelta(opKpis.mDelta) : ""}
+          up={opKpis.mDelta >= 0}
+        />
+        <StatCard
+          icon={Waves}
+          label="Divers Logged"
+          value={opKpis.divers.toLocaleString()}
+          delta={opKpis.live ? kpiDelta(opKpis.dDelta) : ""}
+          up={opKpis.dDelta >= 0}
+        />
+        <StatCard
+          icon={CreditCard}
+          label="Revenue Generated"
+          value={`₱${Math.round(opKpis.revenue).toLocaleString()}`}
+          delta={
+            opKpis.live && opKpis.rDelta !== 0
+              ? `${opKpis.rDelta >= 0 ? "+" : "-"}₱${Math.round(
+                  Math.abs(opKpis.rDelta)
+                ).toLocaleString()}`
+              : ""
+          }
+          up={opKpis.rDelta >= 0}
+        />
+      </div>
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
       <SectionCard title="Most Active Operators">
         <div className="h-80">
+          {isEmptyChartData(scaledOperatorActivity) ? (
+            <ChartEmptyState className="h-80" />
+          ) : (
           <ResponsiveContainer>
             <BarChart
               data={scaledOperatorActivity}
@@ -9333,11 +9308,15 @@ export function OperatorAnalytics() {
               />
             </BarChart>
           </ResponsiveContainer>
+          )}
         </div>
       </SectionCard>
 
       <SectionCard title="Credits Used vs Manifestos">
         <div className="h-80">
+          {isEmptyChartData(scaledOperatorActivity) ? (
+            <ChartEmptyState className="h-80" />
+          ) : (
           <ResponsiveContainer>
             <LineChart
               data={scaledOperatorActivity}
@@ -9389,6 +9368,7 @@ export function OperatorAnalytics() {
               />
             </LineChart>
           </ResponsiveContainer>
+          )}
         </div>
       </SectionCard>
 
@@ -9615,10 +9595,25 @@ export function Reports() {
     liveReceiptsRp.data
   );
 
-  const filteredTrends = useMemo(
-    () => monthlyTrends.filter((d) => visibleMonths.includes(d.m)),
-    [visibleMonths],
-  );
+  const filteredTrends = useMemo(() => {
+    if (!rpLive) {
+      return monthlyTrends.filter((d) => visibleMonths.includes(d.m));
+    }
+    const tB = bucketByMonth(
+      liveTouristsRp.data ?? [],
+      (t: any) => t.registered ?? t.createdAt ?? ""
+    );
+    const mB = bucketByMonth(
+      liveManifestsRp.data ?? [],
+      (m: any) => m.date,
+      (m: any) => m.divers || 0
+    );
+    return MONTHS.map((m, i) => ({
+      m,
+      tourists: tB[i]?.count ?? 0,
+      dives: mB[i]?.total ?? 0,
+    })).filter((d) => visibleMonths.includes(d.m));
+  }, [rpLive, visibleMonths, liveTouristsRp.data, liveManifestsRp.data]);
 
   const generateReport = async () => {
     setGenerating(true);
@@ -9834,7 +9829,7 @@ export function Reports() {
   return (
     <div className="space-y-6">
       <Card className="p-6 shadow-elegant">
-        <div className="flex flex-col md:flex-row md:items-center gap-4">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <h3 className="font-display font-semibold text-lg">
               Generate report
@@ -9843,48 +9838,50 @@ export function Reports() {
               Aggregate tourism data across configurable time windows.
             </p>
           </div>
-          <div className="md:ml-auto flex flex-wrap items-center gap-2">
-            <Tabs value={range} onValueChange={setRange}>
-              <TabsList className="bg-secondary">
-                <TabsTrigger value="daily">Daily</TabsTrigger>
-                <TabsTrigger value="weekly">Weekly</TabsTrigger>
-                <TabsTrigger value="monthly">Monthly</TabsTrigger>
-              </TabsList>
-            </Tabs>
-            <div className="flex items-center gap-2">
-              <Label className="text-xs text-muted-foreground whitespace-nowrap">
-                From
-              </Label>
-              <Input
-                type="date"
-                value={dateFrom}
-                onChange={(e) => setDateFrom(e.target.value)}
-                className="w-40"
-              />
-            </div>
-            <div className="flex items-center gap-2">
-              <Label className="text-xs text-muted-foreground whitespace-nowrap">
-                To
-              </Label>
-              <Input
-                type="date"
-                value={dateTo}
-                onChange={(e) => setDateTo(e.target.value)}
-                className="w-40"
-              />
-            </div>
-            <Button
-              className="gradient-primary text-primary-foreground"
-              onClick={generateReport}
-              disabled={generating}
-            >
-              {generating ? (
-                <Loader2 className="size-4 mr-1.5 animate-spin" />
-              ) : (
-                <FileBarChart className="size-4 mr-1.5" />
-              )}
-              {generating ? "Generating…" : "Generate"}
-            </Button>
+          <Button
+            className="gradient-primary text-primary-foreground shrink-0"
+            onClick={generateReport}
+            disabled={generating}
+          >
+            {generating ? (
+              <Loader2 className="size-4 mr-1.5 animate-spin" />
+            ) : (
+              <FileBarChart className="size-4 mr-1.5" />
+            )}
+            {generating ? "Generating…" : "Generate"}
+          </Button>
+        </div>
+
+        <div className="mt-5 flex flex-col gap-3 rounded-xl border border-border/60 bg-secondary/40 p-3 sm:flex-row sm:flex-wrap sm:items-center">
+          <Tabs value={range} onValueChange={setRange}>
+            <TabsList className="bg-secondary">
+              <TabsTrigger value="daily">Daily</TabsTrigger>
+              <TabsTrigger value="weekly">Weekly</TabsTrigger>
+              <TabsTrigger value="monthly">Monthly</TabsTrigger>
+            </TabsList>
+          </Tabs>
+          <div className="hidden sm:block h-6 w-px bg-border" />
+          <div className="flex items-center gap-2">
+            <Label className="text-xs text-muted-foreground whitespace-nowrap">
+              From
+            </Label>
+            <Input
+              type="date"
+              value={dateFrom}
+              onChange={(e) => setDateFrom(e.target.value)}
+              className="w-40"
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <Label className="text-xs text-muted-foreground whitespace-nowrap">
+              To
+            </Label>
+            <Input
+              type="date"
+              value={dateTo}
+              onChange={(e) => setDateTo(e.target.value)}
+              className="w-40"
+            />
           </div>
         </div>
       </Card>
@@ -9959,6 +9956,9 @@ export function Reports() {
 
       <SectionCard title="Trend — Monthly dives">
         <div className="h-80">
+          {isEmptyChartData(filteredTrends) ? (
+            <ChartEmptyState className="h-80" />
+          ) : (
           <ResponsiveContainer>
             <AreaChart data={filteredTrends} margin={{ left: -12 }}>
               <defs>
@@ -10010,6 +10010,7 @@ export function Reports() {
               />
             </AreaChart>
           </ResponsiveContainer>
+          )}
         </div>
       </SectionCard>
     </div>
@@ -10017,15 +10018,55 @@ export function Reports() {
 }
 
 /* ------------------------------ ANNOUNCEMENTS ------------------------------ */
+function announcementWhen(a: LiveAnnouncementRow): string {
+  const st = statusOf(a);
+  if (st === "Scheduled" && a.startDate) {
+    const d = new Date(a.startDate);
+    return `Sends ${d.toLocaleString("en", {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    })}`;
+  }
+  if (a.createdAt) {
+    const d = new Date(a.createdAt);
+    if (!Number.isNaN(d.getTime())) {
+      return d.toLocaleString("en", { month: "short", day: "numeric" });
+    }
+  }
+  return "—";
+}
+
+/** "yyyy-mm-dd" for a date input, from an ISO timestamp or date string. */
+function toDateInput(v?: string | null): string {
+  if (!v) return "";
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toISOString().slice(0, 10);
+}
+
+/** Validates an optional event range; returns an error message or null. */
+function eventRangeError(start: string, end: string): string | null {
+  if (!start || !end) return null;
+  if (new Date(end).getTime() < new Date(start).getTime()) {
+    return "Event end must be on or after the start date";
+  }
+  return null;
+}
+
 function Announcements() {
   const { canAct, deny } = usePermission();
   type Announcement = {
-    id: number;
+    id: number | string;
+    dbId?: string;
     title: string;
     body: string;
     when: string;
-    status: "Published" | "Scheduled" | "Draft" | "Archived";
-    audience?: { nat: string[]; ops: string[]; lvls: string[] };
+    status: AnnouncementStatus;
+    imageUrl?: string | null;
+    eventStart?: string | null;
+    eventEnd?: string | null;
   };
   const [items, setItems] = useState<Announcement[]>([
     {
@@ -10069,20 +10110,53 @@ function Announcements() {
     body: "",
     schedule: "",
     scheduleTime: "",
-    nat: [] as string[],
-    ops: [] as string[],
-    lvls: [] as string[],
+    eventStart: "",
+    eventEnd: "",
+    imageUrl: "" as string,
+    photoFile: null as File | null,
   });
   const [draftErrors, setDraftErrors] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
   const [editItem, setEditItem] = useState<any>(null);
-  const [editDraft, setEditDraft] = useState({ title: "", body: "" });
+  const [editDraft, setEditDraft] = useState({
+    title: "",
+    body: "",
+    eventStart: "",
+    eventEnd: "",
+    imageUrl: "" as string,
+    photoFile: null as File | null,
+  });
   const [editErrors, setEditErrors] = useState<Record<string, string>>({});
   const [filter, setFilter] = useState("All");
+  const draftFileRef = useRef<HTMLInputElement>(null);
+  const editFileRef = useRef<HTMLInputElement>(null);
+
+  const live = useLiveMode();
+  const invalidate = useInvalidateLive();
+  const { data: liveRows, isLoading: liveLoading } = useAnnouncementsLive();
+
+  // Live rows (Date-window status) when connected, mock seed in demo mode.
+  const liveItems = useMemo<Announcement[]>(() => {
+    if (!liveRows) return [];
+    return liveRows.map((r) => ({
+      id: r._dbId,
+      dbId: r._dbId,
+      title: r.title,
+      body: r.body ?? "",
+      when: announcementWhen(r),
+      status: statusOf(r),
+      imageUrl: r.imageUrl,
+      eventStart: r.eventStartDate,
+      eventEnd: r.eventEndDate,
+    }));
+  }, [liveRows]);
+
+  const source: Announcement[] = live ? liveItems : items;
 
   const filtered = useMemo(() => {
-    if (filter === "All") return items;
-    return items.filter((i) => i.status === filter);
-  }, [items, filter]);
+    if (filter === "All") return source;
+    return source.filter((i) => i.status === filter);
+  }, [source, filter]);
 
   // Announcements are staff-operable (both tiers); the guard keeps locked
   // users out consistently across edit/publish/delete entry points.
@@ -10094,87 +10168,243 @@ function Announcements() {
     return true;
   };
 
-  const openEdit = (item: any) => {
+  const emptyDraft = {
+    title: "",
+    body: "",
+    schedule: "",
+    scheduleTime: "",
+    eventStart: "",
+    eventEnd: "",
+    imageUrl: "",
+    photoFile: null as File | null,
+  };
+
+  const pickDraftPhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setDraft((d) => ({ ...d, photoFile: f, imageUrl: URL.createObjectURL(f) }));
+  };
+
+  const pickEditPhoto = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    setEditDraft((d) => ({
+      ...d,
+      photoFile: f,
+      imageUrl: URL.createObjectURL(f),
+    }));
+  };
+
+  const openEdit = (item: Announcement) => {
     if (!guardAct()) return;
     setEditItem(item);
-    setEditDraft({ title: item.title, body: item.body });
+    setEditDraft({
+      title: item.title,
+      body: item.body,
+      eventStart: toDateInput(item.eventStart),
+      eventEnd: toDateInput(item.eventEnd),
+      imageUrl: item.imageUrl ?? "",
+      photoFile: null,
+    });
     setEditErrors({});
   };
 
-  const saveEdit = () => {
+  // Uploads a newly picked file (returns the public URL); otherwise keeps the
+  // existing URL. Demo mode never uploads — the local object URL previews.
+  const resolveImage = async (
+    url: string,
+    file: File | null,
+  ): Promise<string | null> => {
+    if (file && live) return uploadAnnouncementPhoto(file);
+    return url.trim() ? url : null;
+  };
+
+  const saveEdit = async () => {
     if (!guardAct()) return;
     const e: Record<string, string> = {};
     if (!editDraft.title.trim()) e.title = "Title is required";
     if (!editDraft.body.trim()) e.body = "Body is required";
+    const rangeErr = eventRangeError(editDraft.eventStart, editDraft.eventEnd);
+    if (rangeErr) e.eventRange = rangeErr;
     setEditErrors(e);
     if (Object.keys(e).length > 0) return;
-    setItems(
-      items.map((i) =>
-        i.id === editItem.id
-          ? { ...i, title: editDraft.title.trim(), body: editDraft.body.trim() }
-          : i,
-      ),
-    );
-    setEditItem(null);
-    toast.success("Announcement updated");
+
+    if (!live) {
+      setItems(
+        items.map((i) =>
+          i.id === editItem.id
+            ? {
+                ...i,
+                title: editDraft.title.trim(),
+                body: editDraft.body.trim(),
+                imageUrl: editDraft.imageUrl || null,
+                eventStart: editDraft.eventStart || null,
+                eventEnd: editDraft.eventEnd || null,
+              }
+            : i,
+        ),
+      );
+      setEditItem(null);
+      toast.success("Announcement updated");
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const imageUrl = await resolveImage(
+        editDraft.imageUrl,
+        editDraft.photoFile,
+      );
+      // Content-only update — status/schedule stay untouched.
+      await updateAnnouncement(editItem.dbId, {
+        title: editDraft.title.trim(),
+        body: editDraft.body.trim(),
+        imageUrl,
+        eventStartDate: editDraft.eventStart || null,
+        eventEndDate: editDraft.eventEnd || null,
+      });
+      invalidate();
+      setEditItem(null);
+      toast.success("Announcement updated");
+      pushAuditLog(`Updated announcement #A-${editItem.id}`);
+    } catch (err) {
+      toast.error("Could not update announcement", {
+        description: dbErrorMessage(err),
+      });
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const publishDraft = () => {
+  const publishDraft = async () => {
     if (!canAct) return deny();
     const e: Record<string, string> = {};
     if (!draft.title.trim()) e.title = "Title is required";
     if (!draft.body.trim()) e.body = "Body is required";
     if (draft.schedule && !draft.scheduleTime)
       e.scheduleTime = "Set a time to send";
+    const rangeErr = eventRangeError(draft.eventStart, draft.eventEnd);
+    if (rangeErr) e.eventRange = rangeErr;
     setDraftErrors(e);
     if (Object.keys(e).length > 0) return;
     const scheduled = draft.schedule !== "";
-    const status = scheduled ? "Scheduled" : "Published";
-    setItems([
-      {
-        id: Date.now(),
+    const startAt = scheduled
+      ? `${draft.schedule}T${draft.scheduleTime || "00:00"}:00`
+      : null;
+    const status: AnnouncementStatus = scheduled ? "Scheduled" : "Published";
+    const successToast = () =>
+      toast.success(
+        scheduled ? "Announcement scheduled" : "Announcement published",
+        {
+          description: scheduled
+            ? `Queued to send on ${draft.schedule} at ${draft.scheduleTime}.`
+            : undefined,
+        },
+      );
+    const audit = () =>
+      pushAuditLog(
+        scheduled
+          ? `Scheduled announcement #A-${Date.now() % 1000}`
+          : `Pushed announcement #A-${Date.now() % 1000}`,
+      );
+
+    if (!live) {
+      setItems([
+        {
+          id: Date.now(),
+          title: draft.title.trim(),
+          body: draft.body.trim(),
+          when: scheduled
+            ? `${draft.schedule} · ${draft.scheduleTime}`
+            : "Just now",
+          status,
+          imageUrl: draft.imageUrl || null,
+          eventStart: draft.eventStart || null,
+          eventEnd: draft.eventEnd || null,
+        },
+        ...items,
+      ]);
+      setDraft(emptyDraft);
+      setDraftErrors({});
+      successToast();
+      audit();
+      return;
+    }
+
+    setSaving(true);
+    try {
+      const imageUrl = await resolveImage(draft.imageUrl, draft.photoFile);
+      await createAnnouncement({
         title: draft.title.trim(),
         body: draft.body.trim(),
-        when: scheduled
-          ? `${draft.schedule} · ${draft.scheduleTime}`
-          : "Just now",
+        imageUrl,
         status,
-        audience: { nat: draft.nat, ops: draft.ops, lvls: draft.lvls },
-      },
-      ...items,
-    ]);
-    setDraft({
-      title: "",
-      body: "",
-      schedule: "",
-      scheduleTime: "",
-      nat: [],
-      ops: [],
-      lvls: [],
-    });
-    setDraftErrors({});
-    toast.success(
-      scheduled ? "Announcement scheduled" : "Announcement published",
-      {
-        description: scheduled
-          ? `Queued to send on ${draft.schedule} at ${draft.scheduleTime}.`
-          : undefined,
-      },
-    );
-    pushAuditLog(
-      scheduled
-        ? `Scheduled announcement #A-${Date.now() % 1000}`
-        : `Pushed announcement #A-${Date.now() % 1000}`,
-    );
+        startAt,
+        eventStartDate: draft.eventStart || null,
+        eventEndDate: draft.eventEnd || null,
+      });
+      invalidate();
+      setDraft(emptyDraft);
+      setDraftErrors({});
+      successToast();
+      audit();
+    } catch (err) {
+      toast.error("Could not publish announcement", {
+        description: dbErrorMessage(err),
+      });
+    } finally {
+      setSaving(false);
+    }
   };
 
-  const toggleChip = (key: "nat" | "ops" | "lvls", val: string) =>
-    setDraft((d) => ({
-      ...d,
-      [key]: d[key].includes(val)
-        ? d[key].filter((x) => x !== val)
-        : [...d[key], val],
-    }));
+  // Card-action status transitions (publish draft, send scheduled now, cancel
+  // schedule, archive). Content is preserved; only the window columns change.
+  const changeStatus = async (
+    item: Announcement,
+    status: AnnouncementStatus,
+  ) => {
+    if (!guardAct()) return;
+    if (!live) {
+      setItems(
+        items.map((x) =>
+          x.id === item.id
+            ? {
+                ...x,
+                status,
+                when: status === "Published" ? "Just now" : x.when,
+              }
+            : x,
+        ),
+      );
+      return;
+    }
+    try {
+      await updateAnnouncement(item.dbId as string, { status });
+      invalidate();
+    } catch (err) {
+      toast.error("Could not update announcement", {
+        description: dbErrorMessage(err),
+      });
+    }
+  };
+
+  const removeItem = async (item: Announcement) => {
+    if (!guardAct()) return;
+    if (!live) {
+      setItems(items.filter((x) => x.id !== item.id));
+      toast.success("Announcement deleted");
+      return;
+    }
+    try {
+      await deleteAnnouncement(item.dbId as string);
+      invalidate();
+      toast.success("Announcement deleted");
+    } catch (err) {
+      toast.error("Could not delete announcement", {
+        description: dbErrorMessage(err),
+      });
+    }
+  };
 
   const statusBadge = (s: string) => {
     if (s === "Published")
@@ -10202,23 +10432,6 @@ function Announcements() {
       </Badge>
     );
   };
-
-  const audienceSummary = (a?: {
-    nat: string[];
-    ops: string[];
-    lvls: string[];
-  }) => {
-    if (!a) return null;
-    const parts: string[] = [];
-    if (a.nat.length > 0)
-      parts.push(`${a.nat.length} nationalit${a.nat.length > 1 ? "ies" : "y"}`);
-    if (a.ops.length > 0)
-      parts.push(`${a.ops.length} operator${a.ops.length > 1 ? "s" : ""}`);
-    if (a.lvls.length > 0)
-      parts.push(`${a.lvls.length} level${a.lvls.length > 1 ? "s" : ""}`);
-    return parts.length > 0 ? parts.join(" · ") : null;
-  };
-
   return (
     <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
       <div className="lg:col-span-2 space-y-4">
@@ -10247,7 +10460,7 @@ function Announcements() {
                 {s}{" "}
                 {s !== "All" && (
                   <span className="ml-1 text-[10px] opacity-70">
-                    ({items.filter((i) => s === "All" || i.status === s).length}
+                    ({source.filter((i) => s === "All" || i.status === s).length}
                     )
                   </span>
                 )}
@@ -10258,14 +10471,28 @@ function Announcements() {
         {filtered.length === 0 ? (
           <Card className="p-12 text-center text-muted-foreground shadow-elegant">
             <Megaphone className="size-10 mx-auto mb-3 opacity-40" />
-            No announcements match this filter.
+            {live && liveLoading
+              ? "Loading announcements…"
+              : live
+                ? "No announcements yet. Publish one to send it to the app."
+                : "No announcements match this filter."}
           </Card>
         ) : (
           filtered.map((i) => (
             <Card
               key={i.id}
-              className="p-5 shadow-elegant border-border/60 transition-all hover:shadow-glow"
+              className="p-4 shadow-elegant border-border/60 transition-all hover:shadow-glow"
             >
+              <div className="mb-3">
+                <AnnouncementHero
+                  compact
+                  title={i.title}
+                  body={i.body}
+                  imageUrl={i.imageUrl}
+                  eventStart={i.eventStart}
+                  eventEnd={i.eventEnd}
+                />
+              </div>
               <div className="flex items-start gap-3">
                 <div className="size-10 rounded-xl bg-primary-soft text-primary flex items-center justify-center shrink-0">
                   <Megaphone className="size-5" />
@@ -10282,12 +10509,6 @@ function Announcements() {
                     </span>
                   </div>
                   <p className="text-sm text-muted-foreground mt-1">{i.body}</p>
-                  {audienceSummary(i.audience) && (
-                    <div className="mt-2 inline-flex items-center gap-1.5 rounded-lg bg-secondary/60 border border-border/60 px-2.5 py-1 text-[11px] text-muted-foreground">
-                      <Users2 className="size-3 text-primary" />
-                      Targets {audienceSummary(i.audience)}
-                    </div>
-                  )}
                   <div className="mt-3 flex gap-1.5">
                     <Button
                       size="sm"
@@ -10300,11 +10521,7 @@ function Announcements() {
                       size="sm"
                       variant="outline"
                       className="border-destructive/30 text-destructive"
-                      onClick={() => {
-                        if (!guardAct()) return;
-                        setItems(items.filter((x) => x.id !== i.id));
-                        toast.success("Announcement deleted");
-                      }}
+                      onClick={() => removeItem(i)}
                     >
                       <Trash2 className="size-4 mr-1" /> Delete
                     </Button>
@@ -10313,12 +10530,7 @@ function Announcements() {
                         size="sm"
                         className="ml-auto gradient-primary text-primary-foreground"
                         onClick={() => {
-                          if (!guardAct()) return;
-                          setItems(
-                            items.map((x) =>
-                              x.id === i.id ? { ...x, status: "Published" } : x,
-                            ),
-                          );
+                          changeStatus(i, "Published");
                           toast.success("Announcement published");
                           pushAuditLog(`Pushed announcement #A-${i.id}`);
                         }}
@@ -10333,14 +10545,7 @@ function Announcements() {
                           variant="outline"
                           className="ml-auto"
                           onClick={() => {
-                            if (!guardAct()) return;
-                            setItems(
-                              items.map((x) =>
-                                x.id === i.id
-                                  ? { ...x, status: "Draft", when: "Draft" }
-                                  : x,
-                              ),
-                            );
+                            changeStatus(i, "Draft");
                             toast.info("Schedule cancelled", {
                               description: "Moved back to drafts.",
                             });
@@ -10352,18 +10557,7 @@ function Announcements() {
                           size="sm"
                           className="gradient-primary text-primary-foreground"
                           onClick={() => {
-                            if (!guardAct()) return;
-                            setItems(
-                              items.map((x) =>
-                                x.id === i.id
-                                  ? {
-                                      ...x,
-                                      status: "Published",
-                                      when: "Just now",
-                                    }
-                                  : x,
-                              ),
-                            );
+                            changeStatus(i, "Published");
                             toast.success("Sent now", { description: i.title });
                             pushAuditLog(`Pushed announcement #A-${i.id}`);
                           }}
@@ -10372,18 +10566,27 @@ function Announcements() {
                         </Button>
                       </>
                     )}
+                    {i.status === "Archived" && (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="ml-auto"
+                        onClick={() => changeStatus(i, "Published")}
+                      >
+                        <RotateCcw className="size-4 mr-1" /> Republish
+                      </Button>
+                    )}
                     {i.status === "Published" && (
                       <Button
                         size="sm"
                         className="ml-auto gradient-primary text-primary-foreground"
                         onClick={() => {
-                          if (!guardAct()) return;
-                          toast.success("Pushed to tourists", {
+                          toast.success("Already live for tourists", {
                             description: i.title,
                           });
                         }}
                       >
-                        <Send className="size-4 mr-1" /> Push to Tourists
+                        <Send className="size-4 mr-1" /> Live
                       </Button>
                     )}
                   </div>
@@ -10440,6 +10643,62 @@ function Announcements() {
                   {draftErrors.body}
                 </p>
               )}
+            </div>
+
+            <div className="space-y-1.5">
+              <Label className="text-xs font-medium flex items-center gap-1.5">
+                <ImagePlus className="size-3.5 text-primary" /> Hero photo
+                <span className="font-normal text-muted-foreground">
+                  (optional)
+                </span>
+              </Label>
+              <input
+                ref={draftFileRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={pickDraftPhoto}
+              />
+              <AnnouncementHero
+                title={draft.title}
+                body={draft.body}
+                imageUrl={draft.imageUrl || null}
+                eventStart={draft.eventStart || null}
+                eventEnd={draft.eventEnd || null}
+              />
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => draftFileRef.current?.click()}
+                >
+                  <ImagePlus className="size-4 mr-1.5" />
+                  {draft.imageUrl ? "Change photo" : "Add photo"}
+                </Button>
+                {draft.imageUrl && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="text-muted-foreground"
+                    onClick={() => {
+                      setDraft((d) => ({
+                        ...d,
+                        imageUrl: "",
+                        photoFile: null,
+                      }));
+                      if (draftFileRef.current) draftFileRef.current.value = "";
+                    }}
+                  >
+                    <X className="size-4 mr-1" /> Remove
+                  </Button>
+                )}
+              </div>
+              <p className="text-[11px] text-muted-foreground">
+                No photo? The blue gradient fills the hero automatically so it
+                stays clean in the app.
+              </p>
             </div>
 
             <div className="rounded-lg border border-border/70 p-3 space-y-2.5">
@@ -10499,67 +10758,64 @@ function Announcements() {
 
             <div className="rounded-lg border border-border/70 p-3 space-y-2.5">
               <Label className="text-xs font-medium flex items-center gap-1.5">
-                <Users2 className="size-3.5 text-primary" /> Audience targeting
+                <CalendarIcon className="size-3.5 text-primary" /> Event date
+                <span className="font-normal text-muted-foreground">
+                  (optional)
+                </span>
               </Label>
-              <div className="space-y-2">
-                <div className="text-[10px] text-muted-foreground uppercase tracking-wider">
-                  Nationalities
+              <p className="text-[10px] text-muted-foreground">
+                Set this if the announcement is about a dated event. Leave blank
+                for a general notice.
+              </p>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <Label className="text-[10px] text-muted-foreground">
+                    From
+                  </Label>
+                  <Input
+                    type="date"
+                    value={draft.eventStart}
+                    onChange={(e) =>
+                      setDraft({ ...draft, eventStart: e.target.value })
+                    }
+                  />
                 </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {ALL_NATIONALITIES.map((n) => (
-                    <button
-                      key={n}
-                      type="button"
-                      onClick={() => toggleChip("nat", n)}
-                      className={`px-2 py-0.5 rounded-full text-[11px] border transition-colors ${draft.nat.includes(n) ? "bg-primary text-primary-foreground border-primary" : "bg-background border-border text-muted-foreground hover:border-primary/40"}`}
-                    >
-                      {n}
-                    </button>
-                  ))}
-                </div>
-                <div className="text-[10px] text-muted-foreground uppercase tracking-wider">
-                  Dive level
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {ALL_LEVELS.map((n) => (
-                    <button
-                      key={n}
-                      type="button"
-                      onClick={() => toggleChip("lvls", n)}
-                      className={`px-2 py-0.5 rounded-full text-[11px] border transition-colors ${draft.lvls.includes(n) ? "bg-primary text-primary-foreground border-primary" : "bg-background border-border text-muted-foreground hover:border-primary/40"}`}
-                    >
-                      {n}
-                    </button>
-                  ))}
-                </div>
-                <div className="text-[10px] text-muted-foreground uppercase tracking-wider">
-                  Operators
-                </div>
-                <div className="flex flex-wrap gap-1.5">
-                  {ALL_OPERATOR_BIZ.slice(0, 8).map((n) => (
-                    <button
-                      key={n}
-                      type="button"
-                      onClick={() => toggleChip("ops", n)}
-                      className={`px-2 py-0.5 rounded-full text-[11px] border transition-colors ${draft.ops.includes(n) ? "bg-primary text-primary-foreground border-primary" : "bg-background border-border text-muted-foreground hover:border-primary/40"}`}
-                    >
-                      {n}
-                    </button>
-                  ))}
+                <div className="space-y-1">
+                  <Label className="text-[10px] text-muted-foreground">To</Label>
+                  <Input
+                    type="date"
+                    value={draft.eventEnd}
+                    onChange={(e) =>
+                      setDraft({ ...draft, eventEnd: e.target.value })
+                    }
+                  />
                 </div>
               </div>
+              {draftErrors.eventRange && (
+                <p className="text-xs text-destructive flex items-center gap-1">
+                  <AlertCircle className="size-3" />
+                  {draftErrors.eventRange}
+                </p>
+              )}
             </div>
 
             <Button
               className="w-full gradient-primary text-primary-foreground"
               onClick={publishDraft}
+              disabled={saving}
             >
-              {draft.schedule !== "" ? (
+              {saving ? (
+                <Loader2 className="size-4 mr-1.5 animate-spin" />
+              ) : draft.schedule !== "" ? (
                 <CalendarClock className="size-4 mr-1.5" />
               ) : (
                 <Plus className="size-4 mr-1.5" />
               )}
-              {draft.schedule !== "" ? "Schedule" : "Publish"}
+              {saving
+                ? "Saving…"
+                : draft.schedule !== ""
+                  ? "Schedule"
+                  : "Publish"}
             </Button>
           </div>
         </Card>
@@ -10569,25 +10825,25 @@ function Announcements() {
             <div className="flex justify-between">
               <span className="text-muted-foreground">Published</span>
               <span className="font-medium">
-                {items.filter((i) => i.status === "Published").length}
+                {source.filter((i) => i.status === "Published").length}
               </span>
             </div>
             <div className="flex justify-between">
               <span className="text-muted-foreground">Scheduled</span>
               <span className="font-medium">
-                {items.filter((i) => i.status === "Scheduled").length}
+                {source.filter((i) => i.status === "Scheduled").length}
               </span>
             </div>
             <div className="flex justify-between">
               <span className="text-muted-foreground">Drafts</span>
               <span className="font-medium">
-                {items.filter((i) => i.status === "Draft").length}
+                {source.filter((i) => i.status === "Draft").length}
               </span>
             </div>
             <div className="flex justify-between">
               <span className="text-muted-foreground">Archived</span>
               <span className="font-medium">
-                {items.filter((i) => i.status === "Archived").length}
+                {source.filter((i) => i.status === "Archived").length}
               </span>
             </div>
           </div>
@@ -10645,6 +10901,95 @@ function Announcements() {
                 </p>
               )}
             </div>
+            <div className="space-y-1.5">
+              <Label className="text-xs font-medium flex items-center gap-1.5">
+                <ImagePlus className="size-3.5 text-primary" /> Hero photo
+                <span className="font-normal text-muted-foreground">
+                  (optional)
+                </span>
+              </Label>
+              <input
+                ref={editFileRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={pickEditPhoto}
+              />
+              <AnnouncementHero
+                title={editDraft.title}
+                body={editDraft.body}
+                imageUrl={editDraft.imageUrl || null}
+                eventStart={editDraft.eventStart || null}
+                eventEnd={editDraft.eventEnd || null}
+              />
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => editFileRef.current?.click()}
+                >
+                  <ImagePlus className="size-4 mr-1.5" />
+                  {editDraft.imageUrl ? "Change photo" : "Add photo"}
+                </Button>
+                {editDraft.imageUrl && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="text-muted-foreground"
+                    onClick={() => {
+                      setEditDraft((d) => ({
+                        ...d,
+                        imageUrl: "",
+                        photoFile: null,
+                      }));
+                      if (editFileRef.current) editFileRef.current.value = "";
+                    }}
+                  >
+                    <X className="size-4 mr-1" /> Remove
+                  </Button>
+                )}
+              </div>
+            </div>
+            <div className="rounded-lg border border-border/70 p-3 space-y-2.5">
+              <Label className="text-xs font-medium flex items-center gap-1.5">
+                <CalendarIcon className="size-3.5 text-primary" /> Event date
+                <span className="font-normal text-muted-foreground">
+                  (optional)
+                </span>
+              </Label>
+              <div className="grid grid-cols-2 gap-2">
+                <div className="space-y-1">
+                  <Label className="text-[10px] text-muted-foreground">
+                    From
+                  </Label>
+                  <Input
+                    type="date"
+                    value={editDraft.eventStart}
+                    onChange={(e) =>
+                      setEditDraft({ ...editDraft, eventStart: e.target.value })
+                    }
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label className="text-[10px] text-muted-foreground">To</Label>
+                  <Input
+                    type="date"
+                    value={editDraft.eventEnd}
+                    onChange={(e) =>
+                      setEditDraft({ ...editDraft, eventEnd: e.target.value })
+                    }
+                  />
+                </div>
+              </div>
+              {editErrors.eventRange && (
+                <p className="text-xs text-destructive flex items-center gap-1">
+                  <AlertCircle className="size-3" />
+                  {editErrors.eventRange}
+                </p>
+              )}
+            </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setEditItem(null)}>
                 Cancel
@@ -10652,8 +10997,12 @@ function Announcements() {
               <Button
                 className="gradient-primary text-primary-foreground"
                 onClick={saveEdit}
+                disabled={saving}
               >
-                Save Changes
+                {saving ? (
+                  <Loader2 className="size-4 mr-1.5 animate-spin" />
+                ) : null}
+                {saving ? "Saving…" : "Save Changes"}
               </Button>
             </DialogFooter>
           </div>
@@ -11056,11 +11405,17 @@ function SettingsPage() {
 
   return (
     <Tabs defaultValue="users">
-      <TabsList className="bg-secondary">
-        <TabsTrigger value="users">Manage Users</TabsTrigger>
-        <TabsTrigger value="config">System Configuration</TabsTrigger>
-        <TabsTrigger value="audit">Audit Logs</TabsTrigger>
-      </TabsList>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <TabsList className="bg-secondary">
+          <TabsTrigger value="users">Manage Users</TabsTrigger>
+          <TabsTrigger value="audit">Audit Logs</TabsTrigger>
+        </TabsList>
+        <div className="flex items-center gap-2">
+          <Clock className="size-4 text-muted-foreground" />
+          <span className="text-sm text-muted-foreground">Session Timeout</span>
+          <SessionTimeoutSetting />
+        </div>
+      </div>
 
       <TabsContent value="users" className="mt-4 space-y-4">
         <div className="flex items-center gap-3">
@@ -11556,52 +11911,6 @@ function SettingsPage() {
             </div>
           </DialogContent>
         </Dialog>
-      </TabsContent>
-
-      <TabsContent value="config" className="mt-4">
-        <Card className="p-6 shadow-elegant space-y-4 max-w-2xl">
-          {[
-            {
-              l: "Require 2FA for admins",
-              d: "Enforce two-factor authentication",
-            },
-            {
-              l: "Auto-approve verified operators",
-              d: "Skip manual review for pre-verified applications",
-            },
-            {
-              l: "Push announcements to mobile app",
-              d: "Send notifications to all registered tourists",
-            },
-            {
-              l: "Weekly report email digest",
-              d: "Send summary reports to configured recipients",
-            },
-          ].map((s, i) => (
-            <div
-              key={s.l}
-              className="flex items-center justify-between py-2 border-b border-border"
-            >
-              <div>
-                <div className="font-medium">{s.l}</div>
-                <div className="text-sm text-muted-foreground">{s.d}</div>
-              </div>
-              <Switch defaultChecked={i % 2 === 0} />
-            </div>
-          ))}
-
-          <div className="pt-2">
-            <div className="flex items-center justify-between py-2">
-              <div>
-                <div className="font-medium">Session Timeout</div>
-                <div className="text-sm text-muted-foreground">
-                  Auto-logout after a period of inactivity
-                </div>
-              </div>
-              <SessionTimeoutSetting />
-            </div>
-          </div>
-        </Card>
       </TabsContent>
 
       <TabsContent value="audit" className="mt-4 space-y-4">

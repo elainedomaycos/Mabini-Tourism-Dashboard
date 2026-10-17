@@ -1,6 +1,7 @@
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Building2 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Badge } from "@/components/ui/badge";
 import { useFilters } from "@/routes/index";
 import { usePermission, OperatorMgmt } from "@/routes/index";
 import { Establishments } from "@/components/sections/Establishments";
@@ -18,17 +19,20 @@ export function EstablishmentsPage() {
   // RBAC: the accreditation approval queue (Operator Applications) is
   // superadmin-only. TO Staff sees Registered Establishments only.
   const canViewApplications = canAdmin;
-  // OperatorMgmt uses the same `tab` param for "applications" vs "active".
-  // If we use the raw tab value for the outer Tabs, setting tab="active"
-  // hides the outer <TabsContent value="applications"> that contains
-  // OperatorMgmt, resulting in a blank page. Keep the outer Tabs mounted
-  // on "applications" whenever the inner tab is "active".
-  const rawTab = search.tab || "applications";
+  // The registry is the landing view; Operator Applications is entered from
+  // the stat card / tab. Only these two values are top-level now that the
+  // sub-tabs (Applications / Active Operators) live on the same row.
+  const rawTab = search.tab || "registered";
   const outerTab = !canViewApplications
     ? "registered"
     : rawTab === "registered"
       ? "registered"
       : "applications";
+  // Sub-tab is view state, not URL-persisted (the shared `tab` param can't
+  // hold both levels). Seed from a stale `?tab=active` link for back-compat.
+  const [subTab, setSubTab] = useState<"applications" | "active">(() =>
+    search.tab === "active" ? "active" : "applications"
+  );
 
   // Correct direct URL access (?tab=applications / ?tab=active) for reviewers.
   useEffect(() => {
@@ -66,76 +70,98 @@ export function EstablishmentsPage() {
 
   return (
     <div className="space-y-4">
+      <Reveal>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+          <button
+            type="button"
+            onClick={() => setFilters({ tab: "registered" })}
+            className="text-left w-full h-full"
+          >
+            <StatCard
+              icon={Building2}
+              label="Registered Establishments"
+              value={regCountLive ? String(regCount) : "12"}
+              delta={
+                regCountLive ? `${regDiff >= 0 ? "+" : ""}${regDiff}` : "+1"
+              }
+              up={regCountLive ? regDiff >= 0 : true}
+            />
+          </button>
+          {canViewApplications && (
+            <>
+              <button
+                type="button"
+                onClick={() => {
+                  setFilters({ tab: "applications" });
+                  setSubTab("applications");
+                }}
+                className="text-left w-full h-full"
+              >
+                <StatCard
+                  icon={Building2}
+                  label="Pending Applications"
+                  value={isLiveData ? String(pendingCount) : "5"}
+                  delta={
+                    isLiveData
+                      ? `${monthDiff >= 0 ? "+" : ""}${monthDiff}`
+                      : "+2"
+                  }
+                  up={isLiveData ? monthDiff >= 0 : true}
+                />
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setFilters({ tab: "applications" });
+                  setSubTab("active");
+                }}
+                className="text-left w-full h-full"
+              >
+                <StatCard
+                  icon={Building2}
+                  label="Active Operators"
+                  value={isLiveData ? String(approvedCount) : "8"}
+                  delta=""
+                />
+              </button>
+            </>
+          )}
+        </div>
+      </Reveal>
       <Tabs value={outerTab} onValueChange={(v) => setFilters({ tab: v })}>
-        <div className="flex justify-end">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <TabsList className="bg-secondary">
+            <TabsTrigger value="registered">
+              Registered Establishments
+            </TabsTrigger>
             {canViewApplications && (
               <TabsTrigger value="applications">
                 Operator Applications
               </TabsTrigger>
             )}
-            <TabsTrigger value="registered">
-              Registered Establishments
-            </TabsTrigger>
           </TabsList>
-        </div>
-        <Reveal>
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-4 mt-4">
-            <button
-              type="button"
-              onClick={() => setFilters({ tab: "registered" })}
-              className="text-left w-full h-full"
+          {outerTab === "applications" && canViewApplications && (
+            <Tabs
+              value={subTab}
+              onValueChange={(v) => setSubTab(v as "applications" | "active")}
             >
-              <StatCard
-                icon={Building2}
-                label="Registered Establishments"
-                value={regCountLive ? String(regCount) : "12"}
-                delta={
-                  regCountLive
-                    ? `${regDiff >= 0 ? "+" : ""}${regDiff}`
-                    : "+1"
-                }
-                up={regCountLive ? regDiff >= 0 : true}
-              />
-            </button>
-            {canViewApplications && (
-              <>
-                <button
-                  type="button"
-                  onClick={() => setFilters({ tab: "applications" })}
-                  className="text-left w-full h-full"
-                >
-                  <StatCard
-                    icon={Building2}
-                    label="Pending Applications"
-                    value={isLiveData ? String(pendingCount) : "5"}
-                    delta={
-                      isLiveData
-                        ? `${monthDiff >= 0 ? "+" : ""}${monthDiff}`
-                        : "+2"
-                    }
-                    up={isLiveData ? monthDiff >= 0 : true}
-                  />
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setFilters({ tab: "active" })}
-                  className="text-left w-full h-full"
-                >
-                  <StatCard
-                    icon={Building2}
-                    label="Active Operators"
-                    value={isLiveData ? String(approvedCount) : "8"}
-                    delta=""
-                  />
-                </button>
-              </>
-            )}
-          </div>
-        </Reveal>
+              <TabsList className="bg-secondary">
+                <TabsTrigger value="applications">
+                  Applications
+                  {pendingCount > 0 && (
+                    <Badge className="ml-2 h-5 px-1.5 bg-primary text-primary-foreground">
+                      {pendingCount}
+                    </Badge>
+                  )}
+                </TabsTrigger>
+                <TabsTrigger value="active">Active Operators</TabsTrigger>
+              </TabsList>
+            </Tabs>
+          )}
+        </div>
         {canViewApplications && (
           <TabsContent value="applications" className="mt-4">
-            <OperatorMgmt />
+            <OperatorMgmt subTab={subTab} />
           </TabsContent>
         )}
         <TabsContent value="registered" className="mt-4">

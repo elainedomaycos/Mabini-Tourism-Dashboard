@@ -71,8 +71,8 @@ function ReceiptImage({
             "radial-gradient(circle at 20% 20%, oklch(1 0 0 / 0.5), transparent 40%), radial-gradient(circle at 80% 70%, oklch(0.5 0.2 250 / 0.25), transparent 45%)",
         }}
       />
-      <div className="relative flex flex-col items-center justify-center h-full p-6 text-center">
-        <div className="rounded-xl bg-background/90 shadow-glow px-6 py-5 w-full max-w-sm">
+      <div className="relative flex flex-col items-center justify-center h-full p-4 sm:p-6 text-center">
+        <div className="rounded-xl bg-background/90 shadow-glow px-5 py-4 w-full max-w-[20rem]">
           <div className="flex items-center justify-between text-[10px] font-mono text-muted-foreground mb-3">
             <span>BANK TRANSFER</span>
             <span>{receipt?.ref ?? "BNK-0000000"}</span>
@@ -126,26 +126,18 @@ export function ReceiptLightbox({
 
   return (
     <Dialog open={open} onOpenChange={onClose}>
-      <DialogContent className="max-w-4xl p-0 overflow-hidden">
-        <DialogHeader className="px-6 pt-5 pb-0">
-          <DialogTitle className="flex items-center justify-between">
+      <DialogContent className="w-[min(92vw,26rem)] sm:w-[min(92vw,30rem)] max-w-none max-h-[90dvh] overflow-y-auto p-0">
+        <DialogHeader className="px-4 sm:px-6 pt-5 pb-0">
+          <DialogTitle className="flex items-center gap-2">
             <span className="flex items-center gap-2">
               <Maximize className="size-4 text-primary" /> Receipt {receipt?.id}{" "}
               — {receipt?.operator}
             </span>
-            <Button
-              size="icon"
-              variant="ghost"
-              className="size-8"
-              onClick={() => onClose(false)}
-            >
-              <X className="size-4" />
-            </Button>
           </DialogTitle>
         </DialogHeader>
 
         <div
-          className="relative m-6 mt-4 rounded-xl overflow-hidden bg-secondary/40 border border-border/60 h-[480px] select-none"
+          className="relative m-4 sm:m-5 mt-4 rounded-xl overflow-hidden bg-secondary/40 border border-border/60 h-[clamp(320px,58dvh,560px)] select-none"
           onPointerDown={(e) => {
             dragRef.current = {
               startX: e.clientX,
@@ -186,12 +178,12 @@ export function ReceiptLightbox({
           >
             <ReceiptImage
               receipt={receipt}
-              className="w-[92%] aspect-[4/3] rounded-xl shadow-elegant"
+              className="h-full max-h-full w-auto max-w-[92%] aspect-[3/4] rounded-xl shadow-elegant"
             />
           </div>
         </div>
 
-        <div className="flex items-center justify-center gap-2 px-6 pb-6">
+        <div className="flex flex-wrap items-center justify-center gap-2 px-4 sm:px-6 pb-5 sm:pb-6">
           <Button
             variant="outline"
             size="sm"

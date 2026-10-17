@@ -572,6 +572,121 @@ export function buildDivePassInsight(
   };
 }
 
+export interface EstablishmentInsightInput {
+  live: boolean;
+  total: number;
+  active: number;
+  suspended: number;
+  /** Distinct barangays represented. */
+  barangays: number;
+  topBarangay: string | null;
+  /** Share of establishments in the top barangay (0-100). */
+  topBarangayShare: number;
+  /** Establishments with no manifests filed. */
+  idleEstablishments: number;
+  totalCredits: number;
+  pendingApplications: number;
+  seed: number;
+}
+
+export function buildEstablishmentInsight(
+  input: EstablishmentInsightInput,
+): OverviewInsight {
+  const e: EstablishmentInsightInput = {
+    ...input,
+    total: clamp(input.total),
+    active: clamp(input.active),
+    suspended: clamp(input.suspended),
+    barangays: clamp(input.barangays),
+    topBarangayShare: clamp(input.topBarangayShare),
+    idleEstablishments: clamp(input.idleEstablishments),
+    totalCredits: clamp(input.totalCredits),
+    pendingApplications: clamp(input.pendingApplications),
+  };
+  const recs: InsightRecommendation[] = [];
+
+  const clauses: string[] = [];
+  if (e.live) {
+    clauses.push(
+      pick(
+        [
+          `${e.total} ${plural(e.total, "establishment", "establishments")} across ${e.barangays} ${plural(e.barangays, "barangay", "barangays")}, ${e.active} active.`,
+          `${e.active} of ${e.total} ${plural(e.total, "establishment is", "establishments are")} active, spread over ${e.barangays} ${plural(e.barangays, "barangay", "barangays")}.`,
+          `${e.total} accredited ${plural(e.total, "establishment", "establishments")} on record across ${e.barangays} ${plural(e.barangays, "barangay", "barangays")}.`,
+        ],
+        e.seed,
+      ),
+    );
+    const barangay =
+      e.topBarangay && e.topBarangayShare > 0
+        ? `${e.topBarangay} concentrates ${Math.round(e.topBarangayShare)}% of them.`
+        : null;
+    if (barangay) clauses.push(barangay);
+  } else {
+    clauses.push("Demo mode — connect Supabase for live establishment figures.");
+  }
+
+  if (e.suspended > 0) {
+    recs.push({
+      id: "suspended-establishments",
+      title:
+        e.suspended === 1
+          ? "1 establishment is suspended"
+          : `${e.suspended} establishments are suspended`,
+      detail:
+        "Suspended accreditation hides these from public listings — review and reinstate if resolved.",
+      severity: e.suspended >= 5 ? "high" : "medium",
+      section: "establishments",
+    });
+  }
+  if (e.idleEstablishments > 0) {
+    recs.push({
+      id: "idle-establishments",
+      title:
+        e.idleEstablishments === 1
+          ? "1 establishment has filed no manifests"
+          : `${e.idleEstablishments} establishments have filed no manifests`,
+      detail: `Of ${e.total} accredited, these have zero recorded activity — check whether they are operating.`,
+      severity: e.idleEstablishments >= 5 ? "medium" : "low",
+      section: "establishments",
+    });
+  }
+  if (e.pendingApplications >= 5) {
+    recs.push({
+      id: "applications-backlog",
+      title: `${e.pendingApplications} operator ${plural(
+        e.pendingApplications,
+        "application is",
+        "applications are",
+      )} awaiting review`,
+      detail:
+        "A growing queue delays operators from selling dives — clear it to keep accreditation moving.",
+      severity: e.pendingApplications >= 15 ? "high" : "medium",
+      section: "establishments",
+    });
+  }
+  if (
+    e.topBarangay &&
+    e.topBarangayShare >= 50 &&
+    e.barangays > 2
+  ) {
+    recs.push({
+      id: "barangay-concentration",
+      title: `${Math.round(e.topBarangayShare)}% of establishments are in ${e.topBarangay}`,
+      detail:
+        "A concentrated footprint is worth watching for congestion — encouraging other barangays spreads load.",
+      severity: "low",
+      section: null,
+    });
+  }
+
+  return {
+    description: clauses.join(" "),
+    recommendations: rankBySeverity(recs),
+    generatedAt: Date.now(),
+  };
+}
+
 export interface OperatorInsightInput {
   live: boolean;
   operatorsWithManifests: number;

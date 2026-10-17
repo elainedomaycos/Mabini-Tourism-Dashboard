@@ -1274,6 +1274,195 @@ export async function markAllNotificationsRead(): Promise<void> {
   if (error) throw error;
 }
 
+/* ------------------------------ ANNOUNCEMENTS ------------------------------ */
+
+/**
+ * The mobile app's announcement feed. The `announcements` table is owned by
+ * the tourist (Sinsay) app; the dashboard writes it so staff can broadcast a
+ * hero banner (image or blue gradient) to tourists.
+ *
+ * The table has no explicit status column — the dashboard's four states are
+ * derived from `active` + the date window (see `statusOf`), matching how the
+ * public read filter (active-only) treats them.
+ */
+export type AnnouncementStatus = "Published" | "Scheduled" | "Draft" | "Archived";
+
+export interface LiveAnnouncementRow {
+  _dbId: string;
+  title: string;
+  body: string | null;
+  imageUrl: string | null;
+  active: boolean;
+  priority: number;
+  startDate: string | null;
+  endDate: string | null;
+  eventStartDate: string | null;
+  eventEndDate: string | null;
+  createdAt: string;
+}
+
+function rowToAnnouncement(n: any): LiveAnnouncementRow {
+  return {
+    _dbId: n.id,
+    title: n.title || "Untitled announcement",
+    body: n.body ?? null,
+    imageUrl: n.image_url ?? null,
+    active: n.active !== false,
+    priority: typeof n.priority === "number" ? n.priority : 0,
+    startDate: n.start_date ?? null,
+    endDate: n.end_date ?? null,
+    eventStartDate: n.event_start_date ?? null,
+    eventEndDate: n.event_end_date ?? null,
+    createdAt: n.created_at || "",
+  };
+}
+
+/**
+ * Derives the dashboard status from the stored fields. Only `start_date` ever
+ * schedules a row; an `active` row with no dates is simply live.
+ */
+export function statusOf(
+  a: Pick<LiveAnnouncementRow, "active" | "startDate" | "endDate">
+): AnnouncementStatus {
+  const now = Date.now();
+  if (!a.active) {
+    const ended = a.endDate ? new Date(a.endDate).getTime() : NaN;
+    return Number.isFinite(ended) && ended <= now ? "Archived" : "Draft";
+  }
+  if (a.startDate) {
+    const starts = new Date(a.startDate).getTime();
+    if (Number.isFinite(starts) && starts > now) return "Scheduled";
+    const ends = a.endDate ? new Date(a.endDate).getTime() : NaN;
+    if (Number.isFinite(ends) && ends <= now) return "Archived";
+  }
+  return "Published";
+}
+
+async function fetchAnnouncements(): Promise<LiveAnnouncementRow[]> {
+  const { data, error } = await supabase
+    .from("announcements")
+    .select("*")
+    .order("priority", { ascending: false })
+    .order("created_at", { ascending: false })
+    .limit(100);
+  if (error) throw error;
+  return (data || []).map(rowToAnnouncement);
+}
+
+export function useAnnouncementsLive() {
+  return useQuery({
+    queryKey: ["live", "announcements"],
+    queryFn: fetchAnnouncements,
+    enabled: isSupabaseConfigured,
+    staleTime: 30_000,
+    retry: 1,
+  });
+}
+
+export interface AnnouncementWrite {
+  title: string;
+  body: string | null;
+  imageUrl: string | null;
+  status: AnnouncementStatus;
+  eventStartDate?: string | null;
+  eventEndDate?: string | null;
+}
+
+/**
+ * Maps the dashboard status onto the stored columns (date-window model):
+ *   Draft     → active=false, no dates
+ *   Scheduled → active=true, start_date in the future
+ *   Published → active=true, live now (no end)
+ *   Archived  → active=false, end_date in the past
+ */
+function statusToFields(status: AnnouncementStatus, startAt?: string | null) {
+  const nowIso = new Date().toISOString();
+  switch (status) {
+    case "Draft":
+      return { active: false, start_date: null, end_date: null };
+    case "Scheduled":
+      return {
+        active: true,
+        start_date: startAt ? new Date(startAt).toISOString() : nowIso,
+        end_date: null,
+      };
+    case "Archived":
+      return { active: false, start_date: null, end_date: nowIso };
+    case "Published":
+    default:
+      return { active: true, start_date: null, end_date: null };
+  }
+}
+
+export async function createAnnouncement(
+  input: AnnouncementWrite & { startAt?: string | null }
+): Promise<void> {
+  const { error } = await supabase.from("announcements").insert({
+    title: input.title,
+    body: input.body,
+    image_url: input.imageUrl,
+    event_start_date: input.eventStartDate ?? null,
+    event_end_date: input.eventEndDate ?? null,
+    ...statusToFields(input.status, input.startAt),
+  });
+  if (error) throw error;
+}
+
+export async function updateAnnouncement(
+  dbId: string,
+  input: {
+    title?: string;
+    body?: string | null;
+    imageUrl?: string | null;
+    status?: AnnouncementStatus;
+    startAt?: string | null;
+    eventStartDate?: string | null;
+    eventEndDate?: string | null;
+  }
+): Promise<void> {
+  const patch: Record<string, unknown> = {};
+  if (input.title !== undefined) patch.title = input.title;
+  if (input.body !== undefined) patch.body = input.body;
+  if (input.imageUrl !== undefined) patch.image_url = input.imageUrl;
+  if (input.eventStartDate !== undefined)
+    patch.event_start_date = input.eventStartDate;
+  if (input.eventEndDate !== undefined)
+    patch.event_end_date = input.eventEndDate;
+  // Only touch active/start/end when a status transition is requested, so an
+  // edit that changes just content can't silently reschedule a row.
+  if (input.status) {
+    Object.assign(patch, statusToFields(input.status, input.startAt));
+  }
+  const { error } = await supabase
+    .from("announcements")
+    .update(patch)
+    .eq("id", dbId);
+  if (error) throw error;
+}
+
+export async function deleteAnnouncement(dbId: string): Promise<void> {
+  const { error } = await supabase.from("announcements").delete().eq("id", dbId);
+  if (error) throw error;
+}
+
+/**
+ * Uploads a hero photo to the public `announcement-photos` bucket (migration
+ * 041) and returns the full public URL to store in `image_url` — the mobile
+ * app renders it directly, so no signing is needed.
+ */
+export async function uploadAnnouncementPhoto(file: File): Promise<string> {
+  const ext = file.name.split(".").pop()?.toLowerCase() || "jpg";
+  const path = `announcements/${crypto.randomUUID()}.${ext}`;
+  const { error } = await supabase.storage
+    .from("announcement-photos")
+    .upload(path, file, { contentType: file.type || `image/${ext}` });
+  if (error) throw error;
+  const { data } = supabase.storage
+    .from("announcement-photos")
+    .getPublicUrl(path);
+  return data.publicUrl;
+}
+
 /* ------------------------------ KPI HELPERS ------------------------------ */
 
 const KPI_MONTHS = [
@@ -1519,6 +1708,15 @@ export function useLiveRealtime() {
         { event: "*", schema: "public", table: "notifications" },
         () => {
           qc.invalidateQueries({ queryKey: ["live", "notifications"] });
+        }
+      )
+      // Keeps the announcements feed fresh for other staffers. Requires the
+      // table in the supabase_realtime publication (migration 037).
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "announcements" },
+        () => {
+          qc.invalidateQueries({ queryKey: ["live", "announcements"] });
         }
       )
       .subscribe();
