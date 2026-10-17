@@ -2251,10 +2251,10 @@ function DashboardShell({
               className="size-9 rounded-xl object-contain"
             />
             <div>
-              <div className="font-display font-bold text-foreground leading-none">
+              <div className="font-display font-bold text-lg text-foreground leading-none">
                 Tourism Office
               </div>
-              <div className="text-[10px] uppercase tracking-widest text-muted-foreground mt-1">
+              <div className="text-[11px] uppercase tracking-widest text-muted-foreground mt-[0.075rem]">
                 Mabini, Batangas
               </div>
             </div>
