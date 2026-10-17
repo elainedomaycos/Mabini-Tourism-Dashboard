@@ -1255,12 +1255,16 @@ export function useNotificationsLive() {
  * Flips the read flag. Requires migration 039 — the UPDATE policy plus a
  * column-scoped `grant update (is_read)` that lets staff change read state
  * without being able to rewrite title/body/type.
+ *
+ * A broadcast fans out into one row per tourist, so the bell collapses those
+ * rows into a single entry and clears the whole batch at once.
  */
-export async function markNotificationRead(dbId: string): Promise<void> {
+export async function markNotificationsRead(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
   const { error } = await supabase
     .from("notifications")
     .update({ is_read: true })
-    .eq("id", dbId);
+    .in("id", ids);
   if (error) throw error;
 }
 

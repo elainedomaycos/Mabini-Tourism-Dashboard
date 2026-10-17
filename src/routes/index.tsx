@@ -209,7 +209,7 @@ import {
   useAuditLogsLive,
   logAuditEvent,
   useNotificationsLive,
-  markNotificationRead,
+  markNotificationsRead,
   markAllNotificationsRead,
   type LiveNotificationRow,
   type MonthBucket,
@@ -1549,6 +1549,10 @@ type Notif = {
   at: string;
   read: boolean;
   touristId: string | null;
+  /** Every notification row this entry represents (a broadcast fans out). */
+  ids: string[];
+  /** Number of recipients — >1 means it was collapsed from a broadcast. */
+  recipients: number;
 };
 const NOTIF_ICONS: Record<NotifKind, any> = {
   receipt: Receipt,
@@ -1564,7 +1568,8 @@ const NOTIF_ICONS: Record<NotifKind, any> = {
  * bell rather than showing a wrong icon.
  */
 function notifKindFromType(type: string | null): NotifKind {
-  switch ((type || "").toLowerCase()) {
+  const t = (type || "").toLowerCase();
+  switch (t) {
     case "receipt":
     case "payment":
       return "receipt";
@@ -1575,10 +1580,12 @@ function notifKindFromType(type: string | null): NotifKind {
     case "manifest":
     case "dive_manifest":
       return "manifesto";
-    case "announcement":
-    case "notice":
-      return "announcement";
     default:
+      // The mobile app tags broadcast pushes `announcement_*`
+      // (e.g. `announcement_published`), so match the family, not one value.
+      if (t.startsWith("announcement") || t.startsWith("notice")) {
+        return "announcement";
+      }
       return "generic";
   }
 }
@@ -1595,35 +1602,64 @@ function useNotifications() {
   const query = useNotificationsLive();
   const rows = query.data;
 
-  const notifs: Notif[] = useMemo(
-    () =>
-      (rows ?? []).map((n) => ({
-        id: n._dbId,
-        kind: notifKindFromType(n.type),
-        title: n.title,
-        detail: n.body ?? "",
-        // No section column upstream, so there is nothing honest to route to.
-        section: "",
-        at: n.createdAt,
-        read: n.isRead,
-        touristId: n.touristId,
-      })),
-    [rows],
-  );
+  const notifs: Notif[] = useMemo(() => {
+    const groups = new Map<string, Notif>();
+    const order: string[] = [];
+    for (const n of rows ?? []) {
+      // A broadcast fans out into one row per tourist inside a single
+      // transaction, so every row in the batch shares type/title/body and an
+      // identical created_at. That tuple is the stable grouping key.
+      const key = `${n.type ?? ""}|${n.title}|${n.body ?? ""}|${n.createdAt}`;
+      const existing = groups.get(key);
+      if (existing) {
+        existing.ids.push(n._dbId);
+        existing.recipients += 1;
+        // Stays unread until every recipient's row has been handled.
+        existing.read = existing.read && n.isRead;
+      } else {
+        groups.set(key, {
+          id: n._dbId,
+          kind: notifKindFromType(n.type),
+          title: n.title,
+          detail: n.body ?? "",
+          // No section column upstream, so there is nothing honest to route to.
+          section: "",
+          at: n.createdAt,
+          read: n.isRead,
+          touristId: n.touristId,
+          ids: [n._dbId],
+          recipients: 1,
+        });
+        order.push(key);
+      }
+    }
+    // Rows are newest-first, so `order` preserves the feed's ordering. A
+    // broadcast names no single tourist, so only a lone recipient keeps its
+    // deep-link target.
+    return order.map((k) => {
+      const g = groups.get(k)!;
+      if (g.recipients > 1) g.touristId = null;
+      return g;
+    });
+  }, [rows]);
 
   const unread = notifs.filter((n) => !n.read).length;
 
-  const markNotifRead = async (id: string) => {
+  const markNotifRead = async (ids: string[]) => {
+    if (ids.length === 0) return;
+    const idSet = new Set(ids);
     const previous = qc.getQueryData<LiveNotificationRow[]>([
       "live",
       "notifications",
     ]);
     // Optimistic: the badge should drop the instant you click.
     qc.setQueryData<LiveNotificationRow[]>(["live", "notifications"], (old) =>
-      (old ?? []).map((n) => (n._dbId === id ? { ...n, isRead: true } : n)),
+      (old ?? []).map((n) =>
+        idSet.has(n._dbId) ? { ...n, isRead: true } : n,
+      ),
     );
     try {
-      await markNotificationRead(id);
+      await markNotificationsRead(ids);
     } catch (e) {
       qc.setQueryData(["live", "notifications"], previous);
       toast.error("Could not mark as read", { description: dbErrorMessage(e) });
@@ -2216,10 +2252,10 @@ function DashboardShell({
             />
             <div>
               <div className="font-display font-bold text-foreground leading-none">
-                Mabini, Batangas
+                Tourism Office
               </div>
               <div className="text-[10px] uppercase tracking-widest text-muted-foreground mt-1">
-                Tourism Office
+                Mabini, Batangas
               </div>
             </div>
           </div>
@@ -2688,7 +2724,7 @@ function NotificationsBell() {
                 <button
                   key={n.id}
                   onClick={() => {
-                    void markNotifRead(n.id);
+                    void markNotifRead(n.ids);
                     // No section column upstream, so the only honest target
                     // is the tourist the alert is about, when it names one.
                     if (n.touristId) {
@@ -2728,8 +2764,13 @@ function NotificationsBell() {
                         {n.detail}
                       </div>
                     )}
-                    <div className="text-[10px] text-muted-foreground/70 mt-0.5">
-                      {n.at ? n.at : "Just now"}
+                    <div className="text-[10px] text-muted-foreground/70 mt-0.5 flex items-center gap-1.5">
+                      <span>{n.at ? n.at : "Just now"}</span>
+                      {n.recipients > 1 && (
+                        <span className="rounded-full bg-secondary px-1.5 py-px font-medium text-muted-foreground">
+                          {n.recipients} tourists
+                        </span>
+                      )}
                     </div>
                   </div>
                 </button>
