@@ -1765,7 +1765,7 @@ function Login({ onLogin }: { onLogin: (s: StaffSession) => void }) {
   return (
     <div className="min-h-screen grid lg:grid-cols-2 bg-background">
       {/* Left hero */}
-      <div className="relative hidden lg:flex flex-col justify-between p-12 gradient-primary text-primary-foreground overflow-hidden">
+      <div className="relative hidden lg:flex flex-col justify-between p-12 pl-20 gradient-primary text-primary-foreground overflow-hidden">
         <div
           className="absolute inset-0 opacity-20 pointer-events-none"
           style={{
@@ -1773,11 +1773,11 @@ function Login({ onLogin }: { onLogin: (s: StaffSession) => void }) {
               "radial-gradient(circle at 30% 20%, oklch(1 0 0 / 0.4), transparent 40%), radial-gradient(circle at 80% 80%, oklch(1 0 0 / 0.25), transparent 40%)",
           }}
         />
-        <div className="relative flex items-center gap-2 font-display font-bold text-xl">
+        <div className="relative flex items-center gap-2 font-display font-bold text-2xl">
           <img
             src="/logo.png"
             alt="Mabini, Batangas logo"
-            className="size-9 rounded-xl object-contain"
+            className="size-10 rounded-xl object-contain"
           />
           Mabini, Batangas
         </div>
