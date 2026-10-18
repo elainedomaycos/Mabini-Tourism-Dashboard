@@ -153,6 +153,10 @@ import {
   PopoverTrigger,
   PopoverContent,
 } from "@/components/ui/popover";
+import {
+  ToggleGroup,
+  ToggleGroupItem,
+} from "@/components/ui/toggle-group";
 import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
 import { Pagination, usePagination } from "@/components/ui/pagination";
@@ -339,6 +343,7 @@ const diveSites: {
   depth: string;
   difficulty: string;
   type: string;
+  types?: string[];
   status: string;
   dives: number;
   description: string;
@@ -2564,7 +2569,7 @@ function DashboardShell({
             {paletteSites.map((s) => (
               <CommandItem
                 key={s.id}
-                value={`dive site ${s.name} ${s.id} ${s.barangay} ${s.type} ${s.difficulty}`}
+                value={`dive site ${s.name} ${s.id} ${s.barangay} ${s.types.join(" ")} ${s.difficulty}`}
                 onSelect={() => {
                   setFilters({ section: "dive-ops", tab: "sites", q: s.name });
                   setSearchOpen(false);
@@ -4042,7 +4047,9 @@ function Overview({ session }: { session?: StaffSession | null }) {
                       <TableCell className="text-muted-foreground">
                         Type
                       </TableCell>
-                      <TableCell className="font-medium">{site.type}</TableCell>
+                      <TableCell className="font-medium">
+                        {site.types?.length ? site.types.join(", ") : site.type}
+                      </TableCell>
                     </TableRow>
                     <TableRow>
                       <TableCell className="text-muted-foreground">
@@ -4112,7 +4119,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
               </TableHeader>
               <TableBody>
                 {ovSites
-                  .filter((s) => s.type === drillDiveType.name)
+                  .filter((s) => s.types.includes(drillDiveType.name))
                   .map((s) => (
                     <TableRow key={s.id}>
                       <TableCell className="font-medium">
@@ -4121,13 +4128,13 @@ function Overview({ session }: { session?: StaffSession | null }) {
                       </TableCell>
                       <TableCell>
                         <Badge variant="outline" className="text-[10px]">
-                          {s.type}
+                          {s.types.join(", ")}
                         </Badge>
                       </TableCell>
                       <TableCell>{s.dives}</TableCell>
                     </TableRow>
                   ))}
-                {ovSites.filter((s) => s.type === drillDiveType.name)
+                {ovSites.filter((s) => s.types.includes(drillDiveType.name))
                   .length === 0 && (
                   <TableRow>
                     <TableCell
@@ -7838,23 +7845,32 @@ function ForwardForm({
 // Canonical site view: normalizes live rows (siteCode/depthRange/siteType/
 // photoUrl/dives) and mock rows (id/depth/type/photo) to one shape so all
 // render code below works on both sources unchanged.
-const toSiteView = (s: any) => ({
-  _dbId: s._dbId,
-  id: s.siteCode ?? s.id ?? "—",
-  name: s.name,
-  barangay: s.barangay ?? "—",
-  depth: s.depthRange ?? s.depth ?? "—",
-  difficulty: s.difficulty ?? "—",
-  type: s.siteType ?? s.type ?? "—",
-  status: s.status,
-  dives: s.dives ?? 0,
-  description: s.description ?? "",
-  photo: s.photo ?? null,
-  photoPath: s.photoUrl ?? null,
-  lat: s.lat,
-  lng: s.lng,
-  createdAt: s.createdAt ?? null,
-});
+const toSiteView = (s: any) => {
+  // Multi-type lives in `siteTypes` (live) or `types` (mock); legacy rows and
+  // old mock entries only carry a single `type`.
+  const types: string[] =
+    s.siteTypes ??
+    s.types ??
+    (s.type && s.type !== "—" ? [s.type] : []);
+  return {
+    _dbId: s._dbId,
+    id: s.siteCode ?? s.id ?? "—",
+    name: s.name,
+    barangay: s.barangay ?? "—",
+    depth: s.depthRange ?? s.depth ?? "—",
+    difficulty: s.difficulty ?? "—",
+    type: types[0] ?? "—",
+    types,
+    status: s.status,
+    dives: s.dives ?? 0,
+    description: s.description ?? "",
+    photo: s.photo ?? null,
+    photoPath: s.photoUrl ?? null,
+    lat: s.lat,
+    lng: s.lng,
+    createdAt: s.createdAt ?? null,
+  };
+};
 
 // Signed-URL cache shared by every SitePhoto (list + dialog + heatmap
 // tooltip): one network call per storage path per session.
@@ -7937,7 +7953,7 @@ export function DiveSiteMgmt() {
     barangay: "",
     depth: "",
     difficulty: "Open Water",
-    type: "Scuba",
+    types: ["Scuba"] as string[],
     description: "",
     lat: "13.7620",
     lng: "120.9210",
@@ -7955,7 +7971,8 @@ export function DiveSiteMgmt() {
       if (search.status !== "All" && s.status !== search.status) return false;
       if (search.difficulty !== "All" && s.difficulty !== search.difficulty)
         return false;
-      if (search.siteType !== "All" && s.type !== search.siteType) return false;
+      if (search.siteType !== "All" && !s.types.includes(search.siteType))
+        return false;
       if (search.q) {
         const q = search.q.toLowerCase();
         if (
@@ -7980,7 +7997,11 @@ export function DiveSiteMgmt() {
   const siteTypeOptions = useMemo(
     () =>
       isLiveData
-        ? [...new Set(sites.map((s) => s.type).filter((t) => t !== "—"))].sort()
+        ? [
+            ...new Set(
+              sites.flatMap((s) => s.types).filter((t) => t !== "—"),
+            ),
+          ].sort()
         : ALL_SITE_TYPES,
     [isLiveData, sites]
   );
@@ -8016,7 +8037,7 @@ export function DiveSiteMgmt() {
     )
       e.depth = "e.g. 10–30 m or 15 m";
     if (!newSite.difficulty) e.difficulty = "Select difficulty";
-    if (!newSite.type) e.type = "Select type";
+    if (newSite.types.length === 0) e.type = "Select at least one type";
     const lat = Number(newSite.lat);
     const lng = Number(newSite.lng);
     if (!newSite.lat.trim() || Number.isNaN(lat) || lat < -90 || lat > 90)
@@ -8042,7 +8063,7 @@ export function DiveSiteMgmt() {
       barangay: "",
       depth: "",
       difficulty: "Open Water",
-      type: "Scuba",
+      types: ["Scuba"],
       description: "",
       lat: "13.7620",
       lng: "120.9210",
@@ -8059,7 +8080,8 @@ export function DiveSiteMgmt() {
       barangay: newSite.barangay,
       depth: newSite.depth.trim(),
       difficulty: newSite.difficulty,
-      type: newSite.type,
+      types: newSite.types,
+      type: newSite.types.join(", "),
       description: newSite.description.trim(),
       lat: Number(newSite.lat),
       lng: Number(newSite.lng),
@@ -8077,7 +8099,7 @@ export function DiveSiteMgmt() {
           siteCode: nextSiteCode(),
           ...base,
           depthRange: base.depth,
-          siteType: base.type,
+          siteTypes: base.types,
           photoUrl,
         });
         invalidateSites();
@@ -8132,7 +8154,11 @@ export function DiveSiteMgmt() {
       barangay: site.barangay && site.barangay !== "—" ? site.barangay : "",
       depth: site.depth && site.depth !== "—" ? site.depth : "",
       difficulty: site.difficulty && site.difficulty !== "—" ? site.difficulty : "Open Water",
-      type: site.type && site.type !== "—" ? site.type : "Scuba",
+      types: site.types?.length
+        ? site.types
+        : site.type && site.type !== "—"
+          ? [site.type]
+          : ["Scuba"],
       description: site.description ?? "",
       lat: site.lat != null ? String(site.lat) : "",
       lng: site.lng != null ? String(site.lng) : "",
@@ -8155,7 +8181,8 @@ export function DiveSiteMgmt() {
       barangay: newSite.barangay,
       depth: newSite.depth.trim(),
       difficulty: newSite.difficulty,
-      type: newSite.type,
+      types: newSite.types,
+      type: newSite.types.join(", "),
       description: newSite.description.trim(),
       lat: Number(newSite.lat),
       lng: Number(newSite.lng),
@@ -8176,7 +8203,7 @@ export function DiveSiteMgmt() {
         await updateDiveSite(editTarget._dbId, {
           ...base,
           depthRange: base.depth,
-          siteType: base.type,
+          siteTypes: base.types,
           photoUrl,
         });
         invalidateSites();
@@ -8528,7 +8555,9 @@ export function DiveSiteMgmt() {
                           {s.difficulty}
                         </Badge>
                       </TableCell>
-                      <TableCell>{s.type}</TableCell>
+                      <TableCell>
+                        {s.types.length ? s.types.join(", ") : "—"}
+                      </TableCell>
                       <TableCell>{s.dives}</TableCell>
                       <TableCell>
                         <Badge
@@ -8643,7 +8672,14 @@ export function DiveSiteMgmt() {
                     <Field label="Barangay" value={viewing.barangay} />
                     <Field label="Depth Range" value={viewing.depth} />
                     <Field label="Difficulty" value={viewing.difficulty} />
-                    <Field label="Type" value={viewing.type} />
+                    <Field
+                      label="Type"
+                      value={
+                        viewing.types?.length
+                          ? viewing.types.join(", ")
+                          : viewing.type
+                      }
+                    />
                     <Field label="Total Dives" value={String(viewing.dives)} />
                     <Field
                       label="Trend"
@@ -8911,31 +8947,36 @@ export function DiveSiteMgmt() {
                       </p>
                     )}
                   </div>
-                  <div className="space-y-1.5">
+                  <div className="space-y-1.5 sm:col-span-2">
                     <Label>
                       Type <span className="text-destructive">*</span>
                     </Label>
-                    <Select
-                      value={newSite.type}
-                      onValueChange={(v) => setNewSite({ ...newSite, type: v })}
+                    <ToggleGroup
+                      type="multiple"
+                      variant="outline"
+                      value={newSite.types}
+                      onValueChange={(v) =>
+                        setNewSite({ ...newSite, types: v })
+                      }
+                      className={`flex flex-wrap justify-start gap-2 ${
+                        siteErrors.type
+                          ? "rounded-lg ring-1 ring-destructive/40 p-1"
+                          : ""
+                      }`}
                     >
-                      <SelectTrigger
-                        className={
-                          siteErrors.type
-                            ? "border-destructive focus-visible:ring-destructive/30"
-                            : ""
-                        }
-                      >
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {ALL_SITE_TYPES.map((t) => (
-                          <SelectItem key={t} value={t}>
-                            {t}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                      {ALL_SITE_TYPES.map((t) => (
+                        <ToggleGroupItem
+                          key={t}
+                          value={t}
+                          className="h-9 rounded-lg px-3"
+                        >
+                          {t}
+                        </ToggleGroupItem>
+                      ))}
+                    </ToggleGroup>
+                    <p className="text-xs text-muted-foreground">
+                      Select one or more.
+                    </p>
                     {siteErrors.type && (
                       <p className="text-xs text-destructive flex items-center gap-1">
                         <AlertCircle className="size-3" />

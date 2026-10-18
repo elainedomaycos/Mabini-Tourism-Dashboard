@@ -673,6 +673,7 @@ export interface LiveSiteRow {
   depthRange: string;
   difficulty: string;
   siteType: string;
+  siteTypes: string[];
   status: "Active" | "Seasonal" | "Restricted";
   description: string | null;
   photoUrl: string | null;
@@ -728,6 +729,9 @@ async function fetchDiveSites(): Promise<LiveSiteRow[]> {
     depthRange: s.depth_range,
     difficulty: s.difficulty,
     siteType: s.site_type,
+    // Multi-type lives in `site_types` (migration 042); legacy rows and any
+    // writer that only set the single column fall back to a one-item array.
+    siteTypes: s.site_types ?? (s.site_type ? [s.site_type] : []),
     status: capStatus(s.status),
     description: s.description ?? null,
     photoUrl: s.photo_url ?? null,
@@ -754,7 +758,7 @@ export interface NewDiveSite {
   barangay: string;
   depthRange: string;
   difficulty: string;
-  siteType: string;
+  siteTypes: string[];
   description?: string;
   photoUrl?: string | null;
   lat: number;
@@ -769,7 +773,10 @@ export async function addDiveSite(site: NewDiveSite): Promise<void> {
     barangay: site.barangay,
     depth_range: site.depthRange,
     difficulty: site.difficulty,
-    site_type: site.siteType,
+    // `site_type` keeps its single-value CHECK, so it mirrors the first type;
+    // the full list goes in `site_types` (migration 042).
+    site_type: site.siteTypes[0],
+    site_types: site.siteTypes,
     description: site.description || null,
     photo_url: site.photoUrl || null,
     lat: site.lat,
@@ -796,7 +803,7 @@ export interface SiteFieldUpdates {
   barangay: string;
   depthRange: string;
   difficulty: string;
-  siteType: string;
+  siteTypes: string[];
   description?: string | null;
   lat: number;
   lng: number;
@@ -815,7 +822,9 @@ export async function updateDiveSite(
       barangay: fields.barangay,
       depth_range: fields.depthRange,
       difficulty: fields.difficulty,
-      site_type: fields.siteType,
+      // Single-value mirror + full list — see addDiveSite.
+      site_type: fields.siteTypes[0],
+      site_types: fields.siteTypes,
       description: fields.description || null,
       lat: fields.lat,
       lng: fields.lng,
