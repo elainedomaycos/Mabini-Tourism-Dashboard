@@ -336,172 +336,6 @@ const topSites = [
   { name: "Manta Reef", value: 197 },
   { name: "Turtle Bay", value: 168 },
 ];
-const diveSites: {
-  id: string;
-  name: string;
-  barangay: string;
-  depth: string;
-  difficulty: string;
-  type: string;
-  types?: string[];
-  status: string;
-  dives: number;
-  description: string;
-  photo: string;
-  lat: number;
-  lng: number;
-}[] = [
-  {
-    id: "DS-001",
-    name: "Blue Hole",
-    barangay: "San Teodoro",
-    depth: "12–40 m",
-    difficulty: "Advanced",
-    type: "Fun Dive",
-    status: "Active",
-    dives: 328,
-    description:
-      "A dramatic vertical drop-off with rich coral walls and occasional thresher shark sightings.",
-    photo: "",
-    lat: 13.762,
-    lng: 120.9245,
-  },
-  {
-    id: "DS-002",
-    name: "Coral Gardens",
-    barangay: "Solo",
-    depth: "5–25 m",
-    difficulty: "Open Water",
-    type: "Intro Dive",
-    status: "Active",
-    dives: 284,
-    description:
-      "Shallow reef system ideal for beginners, featuring vast fields of staghorn and brain coral.",
-    photo: "",
-    lat: 13.751,
-    lng: 120.918,
-  },
-  {
-    id: "DS-003",
-    name: "Shark Point",
-    barangay: "San Teodoro",
-    depth: "18–35 m",
-    difficulty: "Advanced",
-    type: "Scuba",
-    status: "Active",
-    dives: 241,
-    description:
-      "A seamount known for whitetip reef sharks and large schools of jacks.",
-    photo: "",
-    lat: 13.768,
-    lng: 120.931,
-  },
-  {
-    id: "DS-004",
-    name: "Manta Reef",
-    barangay: "Batas",
-    depth: "15–30 m",
-    difficulty: "Rescue",
-    type: "Fun Dive",
-    status: "Active",
-    dives: 197,
-    description:
-      "Seasonal cleaning station where manta rays gather from November to April.",
-    photo: "",
-    lat: 13.745,
-    lng: 120.935,
-  },
-  {
-    id: "DS-005",
-    name: "Turtle Bay",
-    barangay: "Batas",
-    depth: "8–18 m",
-    difficulty: "Open Water",
-    type: "Intro Dive",
-    status: "Active",
-    dives: 168,
-    description:
-      "Calm bay with resident green and hawksbill sea turtles year-round.",
-    photo: "",
-    lat: 13.74,
-    lng: 120.928,
-  },
-  {
-    id: "DS-006",
-    name: "Loyzaga Wreck",
-    barangay: "San Joaquin",
-    depth: "22–38 m",
-    difficulty: "Advanced",
-    type: "Scuba",
-    status: "Active",
-    dives: 142,
-    description:
-      "Sunken WWII patrol boat encrusted with soft corals and home to lionfish.",
-    photo: "",
-    lat: 13.735,
-    lng: 120.942,
-  },
-  {
-    id: "DS-007",
-    name: "Sombrero Island Wall",
-    barangay: "Batas",
-    depth: "10–45 m",
-    difficulty: "Divemaster",
-    type: "Training",
-    status: "Active",
-    dives: 135,
-    description:
-      "Sheer wall dive dropping to 45 meters with prolific nudibranch life.",
-    photo: "",
-    lat: 13.753,
-    lng: 120.94,
-  },
-  {
-    id: "DS-008",
-    name: "Sepoc Point",
-    barangay: "San Teodoro",
-    depth: "5–20 m",
-    difficulty: "Intro",
-    type: "Training",
-    status: "Active",
-    dives: 118,
-    description:
-      "Shore-entry reef with a gentle slope, ideal for training and night dives.",
-    photo: "",
-    lat: 13.759,
-    lng: 120.919,
-  },
-  {
-    id: "DS-009",
-    name: "Twin Rocks",
-    barangay: "Solo",
-    depth: "12–28 m",
-    difficulty: "Advanced",
-    type: "Scuba",
-    status: "Seasonal",
-    dives: 96,
-    description:
-      "Two submerged pinnacles with strong currents — best dived October to December.",
-    photo: "",
-    lat: 13.748,
-    lng: 120.912,
-  },
-  {
-    id: "DS-010",
-    name: "Maricaban Wreck",
-    barangay: "San Joaquin",
-    depth: "30–50 m",
-    difficulty: "Divemaster",
-    type: "Training",
-    status: "Restricted",
-    dives: 54,
-    description:
-      "Deep cargo vessel wreck; technical certification required. Rich in glassfish clouds.",
-    photo: "",
-    lat: 13.73,
-    lng: 120.948,
-  },
-];
 const tourists = [
   {
     id: "TR-10241",
@@ -1360,9 +1194,10 @@ const FORWARD_RECIPIENTS = [
 // never .sort()ed, so progression order survives in every dropdown/filter.
 const ALL_DIFFICULTIES = DIVE_DIFFICULTIES;
 const ALL_SITE_TYPES = DIVING_TYPES;
-// Canonical 34-barangay list (src/lib/barangays.ts) — data entry must offer
-// the full set even though rows only cover a few barangays.
-const ALL_BARANGAYS = MABINI_BARANGAYS;
+// Canonical 34-barangay list (src/lib/barangays.ts) plus a catch-all for
+// sites that sit in Mabini waters with no specific barangay. Establishments
+// keep using MABINI_BARANGAYS directly, so this list is dive-site only.
+const SITE_BARANGAYS = ["Mabini (General)", ...MABINI_BARANGAYS];
 
 /* ------------------------------ URL HELPERS ------------------------------ */
 export function useFilters() {
@@ -2204,7 +2039,7 @@ function DashboardShell({
   // Command palette searches live sites when available (normalized view so
   // depth/barangay keys match the mock shape).
   const paletteSites = useMemo(
-    () => (liveSitesShell.data ?? diveSites).map(toSiteView),
+    () => (liveSitesShell.data ?? []).map(toSiteView),
     [liveSitesShell.data]
   );
   const { role, canAdmin } = useRole();
@@ -2980,7 +2815,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
     liveReceiptsOv.data &&
     liveManifestsOv.data
   );
-  const ovSites = (liveSitesOv.data ?? diveSites).map(toSiteView);
+  const ovSites = (liveSitesOv.data ?? []).map(toSiteView);
   const ovSitesLive = isLive && !!liveSitesOv.data;
   const siteBuckets = useMemo(
     () => bucketByMonth(ovSites, (s) => s.createdAt ?? ""),
@@ -7924,13 +7759,15 @@ export function DiveSiteMgmt() {
   const { canAct, canAdmin, deny } = usePermission();
   const { search, setFilters, resetFilters } = useFilters();
   const [viewing, setViewing] = useState<any>(null);
-  const [mockSites, setMockSites] = useState(diveSites);
+  // No seeded demo rows: the registry is live-only, and this local state only
+  // holds sites added/edited while offline.
+  const [mockSites, setMockSites] = useState<any[]>([]);
   // Edit mode reuses the add dialog (prefilled); delete uses its own confirm.
   const [editTarget, setEditTarget] = useState<any>(null);
   const [deleteTarget, setDeleteTarget] = useState<any>(null);
   const [clearPhoto, setClearPhoto] = useState(false);
   // Live mode (Supabase configured): sites come from dive_sites (+ diver
-  // counts rolled up from manifests); mocks are the offline fallback.
+  // counts rolled up from manifests); without it the list is empty.
   const isLive = useLiveMode();
   const liveSites = useDiveSitesLive();
   const liveManifestsDs = useManifestsLive();
@@ -7943,7 +7780,7 @@ export function DiveSiteMgmt() {
   useEffect(() => {
     if (liveSites.isError) {
       toast.error("Could not load live dive sites", {
-        description: "Showing demo data. Check the Supabase connection.",
+        description: "Check the Supabase connection.",
       });
     }
   }, [liveSites.isError]);
@@ -8876,7 +8713,7 @@ export function DiveSiteMgmt() {
                         <SelectValue placeholder="Select barangay" />
                       </SelectTrigger>
                       <SelectContent>
-                        {ALL_BARANGAYS.map((b) => (
+                        {SITE_BARANGAYS.map((b) => (
                           <SelectItem key={b} value={b}>
                             {b}
                           </SelectItem>
