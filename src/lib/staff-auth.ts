@@ -1,6 +1,7 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { supabase, isSupabaseConfigured } from "./supabase";
+import { requestStaffPasswordReset } from "./request-staff-reset-fn";
 
 export type StaffRole = "staff" | "superadmin";
 
@@ -106,6 +107,63 @@ export async function signOutStaff(): Promise<void> {
   await supabase.auth.signOut().catch(() => {});
 }
 
+/* ------------------------- PASSWORD RESET ------------------------- */
+
+/**
+ * Requests a password-recovery email.
+ *
+ * Delegates to a server function rather than calling Supabase directly: this
+ * project shares a Supabase instance with the tourist-facing app, so signups
+ * are enabled — and Supabase's own /recover would mint an auth.users row for
+ * any address submitted to it. The server checks to_staff first and only
+ * mails active staff.
+ *
+ * The result is deliberately identical for staff and non-staff addresses so
+ * this form can't be used to enumerate who has an account; only a
+ * project-wide rate limit comes back as an error.
+ */
+export async function requestPasswordReset(
+  email: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!isSupabaseConfigured) {
+    return { ok: false, error: "Dashboard is not connected to Supabase yet." };
+  }
+  try {
+    const res = await requestStaffPasswordReset({ data: { email } });
+    if (res.ok) return { ok: true };
+    return { ok: false, error: res.message };
+  } catch {
+    return {
+      ok: false,
+      error: "Could not reach the server. Please try again shortly.",
+    };
+  }
+}
+
+/**
+ * Sets a new password using the recovery session Supabase established from
+ * the emailed link. Requires an active session — that session IS the proof
+ * the requester controls the mailbox.
+ */
+export async function updateStaffPassword(
+  password: string
+): Promise<{ ok: true } | { ok: false; error: string }> {
+  if (!isSupabaseConfigured) {
+    return { ok: false, error: "Dashboard is not connected to Supabase yet." };
+  }
+  const { error } = await supabase.auth.updateUser({ password });
+  if (error) {
+    return {
+      ok: false,
+      error:
+        /session|token|auth/i.test(error.message)
+          ? "This reset link has expired or was already used. Request a new one."
+          : error.message,
+    };
+  }
+  return { ok: true };
+}
+
 /** Current access token for authenticated server-function calls. */
 export async function getAccessToken(): Promise<string | null> {
   const {
@@ -200,6 +258,11 @@ export async function requireLiveSession(): Promise<boolean> {
 export function useStaffSession() {
   const [session, setSession] = useState<StaffSession | null>(null);
   const [checking, setChecking] = useState(true);
+  // A recovery link signs the user in, but with a token scoped only to
+  // "change your password". Admitting it as a normal session would drop
+  // them into the dashboard without ever capturing a new password, so the
+  // shell routes them to /reset-password instead.
+  const [recovery, setRecovery] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -234,6 +297,10 @@ export function useStaffSession() {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event, s) => {
+      if (event === "PASSWORD_RECOVERY") {
+        setRecovery(true);
+        return;
+      }
       if (event === "SIGNED_OUT") {
         setSession(null);
         setChecking(false);
@@ -249,5 +316,5 @@ export function useStaffSession() {
     };
   }, []);
 
-  return { session, checking, setSession };
+  return { session, checking, setSession, recovery };
 }

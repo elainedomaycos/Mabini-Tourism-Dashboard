@@ -33,6 +33,7 @@ import {
   DialogFooter,
 } from "@/components/ui/dialog";
 import { SectionCard, StatusBadge, Field, Reveal } from "@/components/shared";
+import { MABINI_BARANGAYS } from "@/lib/barangays";
 import {
   Table,
   TableBody,
@@ -401,7 +402,9 @@ function PermitIndicator({ dateStr }: { dateStr: string }) {
     </span>
   );
 }
-const BARANGAYS = ["San Teodoro", "Solo", "Batas", "San Joaquin"];
+// Canonical 34-barangay list (src/lib/barangays.ts) shared with the
+// dive-site form, so filters and data entry always offer the full set.
+const BARANGAYS = MABINI_BARANGAYS;
 
 // Live rows carry the DB subset; the view fills display-only mock fields
 // (permit data, certifications, ratings) with neutral placeholders. Those
@@ -485,14 +488,9 @@ export function Establishments() {
     [data],
   );
 
-  // Barangay options follow the data source (live distinct values when live).
-  const barangayOptions = useMemo(
-    () =>
-      isLiveData
-        ? [...new Set(data.map((e) => e.barangay).filter((b) => b !== "—"))].sort()
-        : BARANGAYS,
-    [isLiveData, data]
-  );
+  // Filter always offers the full canonical set (empty results render the
+  // no-data message), keeping it consistent with the dive-site form.
+  const barangayOptions = BARANGAYS;
 
   async function handleSuspend() {
     if (!suspendTarget) return;

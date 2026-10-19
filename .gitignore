@@ -7,6 +7,9 @@ dist/
 .nitro/
 .vercel/output/
 
+# Local build cache
+.tanstack/
+
 # Local Vercel CLI state
 .vercel/
 

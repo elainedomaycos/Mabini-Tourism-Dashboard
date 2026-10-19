@@ -567,6 +567,101 @@ export function useInventoryLive() {
   });
 }
 
+/* ------------------------------ PASS PRICING ------------------------------ */
+
+/**
+ * Authoritative price list. This table is the single source of truth for
+ * what a dive pass costs: the dashboard writes it from Dive Pass → Pass
+ * Pricing, and the tourist-facing app reads the same rows from the same
+ * Supabase project, so a committed edit is the whole propagation step —
+ * there is no sync job or webhook on either side. Anything already sold
+ * (dive_pass_inventory.amount) is left untouched, keeping past revenue
+ * figures honest.
+ */
+export interface LivePriceRow {
+  _dbId: string;
+  code: string | null;
+  label: string;
+  passes: number;
+  price: number;
+  description: string | null;
+  sortOrder: number;
+}
+
+async function fetchPassPricing(): Promise<LivePriceRow[]> {
+  const { data: rows, error } = await supabase
+    .from("pass_pricing")
+    .select("id, code, label, passes, price, description, sort_order")
+    .order("sort_order", { ascending: true })
+    .limit(50);
+  if (error) throw error;
+  return (rows || []).map((p: any) => ({
+    _dbId: p.id,
+    code: p.code ?? null,
+    label: p.label || "Dive Pass",
+    passes: Number(p.passes) || 1,
+    price: Number(p.price) || 0,
+    description: p.description ?? null,
+    sortOrder: Number(p.sort_order) || 0,
+  }));
+}
+
+export function usePassPricingLive() {
+  return useQuery({
+    queryKey: ["live", "pass_pricing"],
+    queryFn: fetchPassPricing,
+    enabled: isSupabaseConfigured,
+    staleTime: 30_000,
+    retry: 1,
+  });
+}
+
+/** Upper bound for an editable price — generous headroom over today's rates. */
+export const MAX_PASS_PRICE = 1_000_000;
+
+/**
+ * Client-side validation, applied before any network call so a typo never
+ * reaches the database. Returns an error message, or null when acceptable.
+ * Prices are pesos with at most two decimal places.
+ */
+export function validatePassPrice(raw: string): string | null {
+  const trimmed = raw.trim();
+  if (!trimmed) return "Enter a price.";
+  if (!/^\d*\.?\d{1,2}$/.test(trimmed)) {
+    return "Use a number with up to 2 decimal places.";
+  }
+  const value = Number(trimmed);
+  if (!Number.isFinite(value)) return "Enter a valid number.";
+  if (value <= 0) return "Price must be greater than zero.";
+  if (value > MAX_PASS_PRICE) {
+    return `Price must not exceed ₱${MAX_PASS_PRICE.toLocaleString("en-PH")}.`;
+  }
+  return null;
+}
+
+/**
+ * Persists a new price for one pass_pricing row. Superadmin-only via 034
+ * (RLS rejects anyone else); the caller maps that error to a denial message.
+ */
+export async function updatePassPrice(
+  dbId: string,
+  price: number
+): Promise<void> {
+  const { error } = await supabase
+    .from("pass_pricing")
+    .update({ price })
+    .eq("id", dbId);
+  if (error) throw error;
+}
+
+/** Peso formatting for display (e.g. ₱1,500 / ₱1,500.50). */
+export function formatPeso(value: number): string {
+  return `₱${value.toLocaleString("en-PH", {
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
 /* ------------------------------ DIVE SITES ------------------------------ */
 
 export interface LiveSiteRow {
@@ -578,6 +673,7 @@ export interface LiveSiteRow {
   depthRange: string;
   difficulty: string;
   siteType: string;
+  siteTypes: string[];
   status: "Active" | "Seasonal" | "Restricted";
   description: string | null;
   photoUrl: string | null;
@@ -633,6 +729,9 @@ async function fetchDiveSites(): Promise<LiveSiteRow[]> {
     depthRange: s.depth_range,
     difficulty: s.difficulty,
     siteType: s.site_type,
+    // Multi-type lives in `site_types` (migration 042); legacy rows and any
+    // writer that only set the single column fall back to a one-item array.
+    siteTypes: s.site_types ?? (s.site_type ? [s.site_type] : []),
     status: capStatus(s.status),
     description: s.description ?? null,
     photoUrl: s.photo_url ?? null,
@@ -659,7 +758,7 @@ export interface NewDiveSite {
   barangay: string;
   depthRange: string;
   difficulty: string;
-  siteType: string;
+  siteTypes: string[];
   description?: string;
   photoUrl?: string | null;
   lat: number;
@@ -674,7 +773,10 @@ export async function addDiveSite(site: NewDiveSite): Promise<void> {
     barangay: site.barangay,
     depth_range: site.depthRange,
     difficulty: site.difficulty,
-    site_type: site.siteType,
+    // `site_type` keeps its single-value CHECK, so it mirrors the first type;
+    // the full list goes in `site_types` (migration 042).
+    site_type: site.siteTypes[0],
+    site_types: site.siteTypes,
     description: site.description || null,
     photo_url: site.photoUrl || null,
     lat: site.lat,
@@ -701,7 +803,7 @@ export interface SiteFieldUpdates {
   barangay: string;
   depthRange: string;
   difficulty: string;
-  siteType: string;
+  siteTypes: string[];
   description?: string | null;
   lat: number;
   lng: number;
@@ -720,7 +822,9 @@ export async function updateDiveSite(
       barangay: fields.barangay,
       depth_range: fields.depthRange,
       difficulty: fields.difficulty,
-      site_type: fields.siteType,
+      // Single-value mirror + full list — see addDiveSite.
+      site_type: fields.siteTypes[0],
+      site_types: fields.siteTypes,
       description: fields.description || null,
       lat: fields.lat,
       lng: fields.lng,
@@ -1008,8 +1112,10 @@ export function useStaffLive() {
 
 /**
  * Deactivate/reactivate a staffer. Superadmin-only via 034 — RLS rejects
- * anything else. No hard delete exists by design (deactivation preserves
- * history); the UI offers none either.
+ * anything else. Deactivation is reversible and is the preferred "remove"
+ * action; hard delete exists only to correct a bad invite and lives in the
+ * service-role server fn (delete-staff-fn.ts), which cascades the auth user
+ * away so no DELETE on to_staff is ever needed.
  */
 export async function setStaffActive(
   dbId: string,
@@ -1101,6 +1207,273 @@ export function useAuditLogsLive() {
     staleTime: 30_000,
     retry: 1,
   });
+}
+
+/* ------------------------------ NOTIFICATIONS ------------------------------ */
+
+/**
+ * Staff-facing notification feed behind the header bell. Rows are produced by
+ * the tourist-facing app in the shared Supabase project — the dashboard only
+ * ever reads them and flips the read flag. There is no mock seed: an empty
+ * table means an empty bell, which is the honest state.
+ *
+ * Schema (verified against the live project): id, title, body, type, is_read,
+ * created_at, tourist_id. No recipient column, so `is_read` is global across
+ * the office — one staffer marking a row read clears it for everyone, which
+ * is the intended "someone handled this" semantics for a shared queue.
+ */
+export interface LiveNotificationRow {
+  _dbId: string;
+  title: string;
+  body: string | null;
+  type: string | null;
+  isRead: boolean;
+  createdAt: string;
+  touristId: string | null;
+}
+
+async function fetchNotifications(): Promise<LiveNotificationRow[]> {
+  const { data: rows, error } = await supabase
+    .from("notifications")
+    .select("id, title, body, type, is_read, created_at, tourist_id")
+    .order("created_at", { ascending: false })
+    .limit(50);
+  if (error) throw error;
+  return (rows || []).map((n: any) => ({
+    _dbId: n.id,
+    title: n.title || "Notification",
+    body: n.body ?? null,
+    type: n.type ?? null,
+    isRead: n.is_read !== false,
+    createdAt: n.created_at || "",
+    touristId: n.tourist_id ?? null,
+  }));
+}
+
+export function useNotificationsLive() {
+  return useQuery({
+    queryKey: ["live", "notifications"],
+    queryFn: fetchNotifications,
+    enabled: isSupabaseConfigured,
+    staleTime: 30_000,
+    retry: 1,
+  });
+}
+
+/**
+ * Flips the read flag. Requires migration 039 — the UPDATE policy plus a
+ * column-scoped `grant update (is_read)` that lets staff change read state
+ * without being able to rewrite title/body/type.
+ *
+ * A broadcast fans out into one row per tourist, so the bell collapses those
+ * rows into a single entry and clears the whole batch at once.
+ */
+export async function markNotificationsRead(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+  const { error } = await supabase
+    .from("notifications")
+    .update({ is_read: true })
+    .in("id", ids);
+  if (error) throw error;
+}
+
+export async function markAllNotificationsRead(): Promise<void> {
+  // Scope to unread only: rewriting every row would churn the realtime
+  // publication and the audit trail for no benefit.
+  const { error } = await supabase
+    .from("notifications")
+    .update({ is_read: true })
+    .eq("is_read", false);
+  if (error) throw error;
+}
+
+/* ------------------------------ ANNOUNCEMENTS ------------------------------ */
+
+/**
+ * The mobile app's announcement feed. The `announcements` table is owned by
+ * the tourist (Sinsay) app; the dashboard writes it so staff can broadcast a
+ * hero banner (image or blue gradient) to tourists.
+ *
+ * The table has no explicit status column — the dashboard's four states are
+ * derived from `active` + the date window (see `statusOf`), matching how the
+ * public read filter (active-only) treats them.
+ */
+export type AnnouncementStatus = "Published" | "Scheduled" | "Draft" | "Archived";
+
+export interface LiveAnnouncementRow {
+  _dbId: string;
+  title: string;
+  body: string | null;
+  imageUrl: string | null;
+  active: boolean;
+  priority: number;
+  startDate: string | null;
+  endDate: string | null;
+  eventStartDate: string | null;
+  eventEndDate: string | null;
+  createdAt: string;
+}
+
+function rowToAnnouncement(n: any): LiveAnnouncementRow {
+  return {
+    _dbId: n.id,
+    title: n.title || "Untitled announcement",
+    body: n.body ?? null,
+    imageUrl: n.image_url ?? null,
+    active: n.active !== false,
+    priority: typeof n.priority === "number" ? n.priority : 0,
+    startDate: n.start_date ?? null,
+    endDate: n.end_date ?? null,
+    eventStartDate: n.event_start_date ?? null,
+    eventEndDate: n.event_end_date ?? null,
+    createdAt: n.created_at || "",
+  };
+}
+
+/**
+ * Derives the dashboard status from the stored fields. Only `start_date` ever
+ * schedules a row; an `active` row with no dates is simply live.
+ */
+export function statusOf(
+  a: Pick<LiveAnnouncementRow, "active" | "startDate" | "endDate">
+): AnnouncementStatus {
+  const now = Date.now();
+  if (!a.active) {
+    const ended = a.endDate ? new Date(a.endDate).getTime() : NaN;
+    return Number.isFinite(ended) && ended <= now ? "Archived" : "Draft";
+  }
+  if (a.startDate) {
+    const starts = new Date(a.startDate).getTime();
+    if (Number.isFinite(starts) && starts > now) return "Scheduled";
+    const ends = a.endDate ? new Date(a.endDate).getTime() : NaN;
+    if (Number.isFinite(ends) && ends <= now) return "Archived";
+  }
+  return "Published";
+}
+
+async function fetchAnnouncements(): Promise<LiveAnnouncementRow[]> {
+  const { data, error } = await supabase
+    .from("announcements")
+    .select("*")
+    .order("priority", { ascending: false })
+    .order("created_at", { ascending: false })
+    .limit(100);
+  if (error) throw error;
+  return (data || []).map(rowToAnnouncement);
+}
+
+export function useAnnouncementsLive() {
+  return useQuery({
+    queryKey: ["live", "announcements"],
+    queryFn: fetchAnnouncements,
+    enabled: isSupabaseConfigured,
+    staleTime: 30_000,
+    retry: 1,
+  });
+}
+
+export interface AnnouncementWrite {
+  title: string;
+  body: string | null;
+  imageUrl: string | null;
+  status: AnnouncementStatus;
+  eventStartDate?: string | null;
+  eventEndDate?: string | null;
+}
+
+/**
+ * Maps the dashboard status onto the stored columns (date-window model):
+ *   Draft     → active=false, no dates
+ *   Scheduled → active=true, start_date in the future
+ *   Published → active=true, live now (no end)
+ *   Archived  → active=false, end_date in the past
+ */
+function statusToFields(status: AnnouncementStatus, startAt?: string | null) {
+  const nowIso = new Date().toISOString();
+  switch (status) {
+    case "Draft":
+      return { active: false, start_date: null, end_date: null };
+    case "Scheduled":
+      return {
+        active: true,
+        start_date: startAt ? new Date(startAt).toISOString() : nowIso,
+        end_date: null,
+      };
+    case "Archived":
+      return { active: false, start_date: null, end_date: nowIso };
+    case "Published":
+    default:
+      return { active: true, start_date: null, end_date: null };
+  }
+}
+
+export async function createAnnouncement(
+  input: AnnouncementWrite & { startAt?: string | null }
+): Promise<void> {
+  const { error } = await supabase.from("announcements").insert({
+    title: input.title,
+    body: input.body,
+    image_url: input.imageUrl,
+    event_start_date: input.eventStartDate ?? null,
+    event_end_date: input.eventEndDate ?? null,
+    ...statusToFields(input.status, input.startAt),
+  });
+  if (error) throw error;
+}
+
+export async function updateAnnouncement(
+  dbId: string,
+  input: {
+    title?: string;
+    body?: string | null;
+    imageUrl?: string | null;
+    status?: AnnouncementStatus;
+    startAt?: string | null;
+    eventStartDate?: string | null;
+    eventEndDate?: string | null;
+  }
+): Promise<void> {
+  const patch: Record<string, unknown> = {};
+  if (input.title !== undefined) patch.title = input.title;
+  if (input.body !== undefined) patch.body = input.body;
+  if (input.imageUrl !== undefined) patch.image_url = input.imageUrl;
+  if (input.eventStartDate !== undefined)
+    patch.event_start_date = input.eventStartDate;
+  if (input.eventEndDate !== undefined)
+    patch.event_end_date = input.eventEndDate;
+  // Only touch active/start/end when a status transition is requested, so an
+  // edit that changes just content can't silently reschedule a row.
+  if (input.status) {
+    Object.assign(patch, statusToFields(input.status, input.startAt));
+  }
+  const { error } = await supabase
+    .from("announcements")
+    .update(patch)
+    .eq("id", dbId);
+  if (error) throw error;
+}
+
+export async function deleteAnnouncement(dbId: string): Promise<void> {
+  const { error } = await supabase.from("announcements").delete().eq("id", dbId);
+  if (error) throw error;
+}
+
+/**
+ * Uploads a hero photo to the public `announcement-photos` bucket (migration
+ * 041) and returns the full public URL to store in `image_url` — the mobile
+ * app renders it directly, so no signing is needed.
+ */
+export async function uploadAnnouncementPhoto(file: File): Promise<string> {
+  const ext = file.name.split(".").pop()?.toLowerCase() || "jpg";
+  const path = `announcements/${crypto.randomUUID()}.${ext}`;
+  const { error } = await supabase.storage
+    .from("announcement-photos")
+    .upload(path, file, { contentType: file.type || `image/${ext}` });
+  if (error) throw error;
+  const { data } = supabase.storage
+    .from("announcement-photos")
+    .getPublicUrl(path);
+  return data.publicUrl;
 }
 
 /* ------------------------------ KPI HELPERS ------------------------------ */
@@ -1301,6 +1674,17 @@ export function useLiveRealtime() {
           qc.invalidateQueries({ queryKey: ["live", "dive_pass_inventory"] });
         }
       )
+      // Price edits made here are read by the tourist app, so keep every
+      // dashboard tab honest about the current list. Requires pass_pricing in
+      // the supabase_realtime publication (the dashboard still works without
+      // it — this only drives cross-client push, not the refetch on mount).
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "pass_pricing" },
+        () => {
+          qc.invalidateQueries({ queryKey: ["live", "pass_pricing"] });
+        }
+      )
       .on(
         "postgres_changes",
         { event: "*", schema: "public", table: "to_staff" },
@@ -1327,6 +1711,25 @@ export function useLiveRealtime() {
         { event: "*", schema: "public", table: "audit_logs" },
         () => {
           qc.invalidateQueries({ queryKey: ["live", "audit_logs"] });
+        }
+      )
+      // Keeps the header bell live without a reload. Requires the table in
+      // the supabase_realtime publication (migration 039); without it this
+      // subscription silently never fires.
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "notifications" },
+        () => {
+          qc.invalidateQueries({ queryKey: ["live", "notifications"] });
+        }
+      )
+      // Keeps the announcements feed fresh for other staffers. Requires the
+      // table in the supabase_realtime publication (migration 037).
+      .on(
+        "postgres_changes",
+        { event: "*", schema: "public", table: "announcements" },
+        () => {
+          qc.invalidateQueries({ queryKey: ["live", "announcements"] });
         }
       )
       .subscribe();

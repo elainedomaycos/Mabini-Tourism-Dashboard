@@ -14,9 +14,9 @@ import {
 export function DiveOpsPage() {
   const { search, setFilters } = useFilters();
   const currentTab = search.tab || "manifestos";
-  const isSitesSection = currentTab === "sites" || currentTab === "analytics";
-  const outerTab = isSitesSection ? "sites" : "manifestos";
-  const innerTab = currentTab === "analytics" ? "analytics" : "sites";
+  // Legacy ?tab=analytics URLs land on the sites tab — the heatmap now
+  // lives below the sites table, so there is no separate analytics view.
+  const outerTab = currentTab === "sites" || currentTab === "analytics" ? "sites" : "manifestos";
 
   // Live manifestos + dive sites (React Query cache — no extra fetch).
   const isLive = useLiveMode();
@@ -80,23 +80,12 @@ export function DiveOpsPage() {
             <TabsTrigger value="sites">Dive Sites</TabsTrigger>
           </TabsList>
         </Tabs>
-        {isSitesSection && (
-          <Tabs
-            value={innerTab}
-            onValueChange={(v) => setFilters({ tab: v })}
-          >
-            <TabsList className="bg-secondary">
-              <TabsTrigger value="sites">Sites</TabsTrigger>
-              <TabsTrigger value="analytics">Analytics</TabsTrigger>
-            </TabsList>
-          </Tabs>
-        )}
       </div>
       <div className="mt-4">
         {outerTab === "manifestos" ? (
           <ManifestoView />
         ) : (
-          <DiveSiteMgmt hideHeader forcedTab={innerTab} />
+          <DiveSiteMgmt />
         )}
       </div>
     </div>

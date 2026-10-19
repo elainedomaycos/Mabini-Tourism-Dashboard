@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import {
   CreditCard,
   TrendingUp,
@@ -20,11 +21,17 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { SectionCard, StatCard, Reveal } from "@/components/shared";
 import {
+  ChartEmptyState,
+  isEmptyChartData,
+} from "@/components/ChartEmptyState";
+import {
   useLiveMode,
   useReceiptsLive,
   useInventoryLive,
   bucketByMonth,
 } from "@/lib/queries";
+import { InsightWidget } from "@/components/InsightWidget";
+import { buildDivePassInsight } from "@/lib/insights";
 import {
   ResponsiveContainer,
   PieChart,
@@ -48,6 +55,36 @@ const CHART_COLORS = [
   "var(--color-chart-4)",
   "var(--color-chart-5)",
 ];
+
+const MONTH_LABELS = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+];
+
+function monthIdx(dateStr: string | null | undefined): number {
+  if (!dateStr || dateStr === "—") return -1;
+  const d = new Date(dateStr.length <= 10 ? dateStr + "T00:00:00" : dateStr);
+  return Number.isNaN(d.getTime()) ? -1 : d.getMonth();
+}
+
+function periodKeyOf(t: string): "day" | "weekly" | "monthly" | "annual" | null {
+  const s = t.toLowerCase();
+  if (s.includes("day")) return "day";
+  if (s.includes("week")) return "weekly";
+  if (s.includes("month")) return "monthly";
+  if (s.includes("annual") || s.includes("year")) return "annual";
+  return null;
+}
 
 const passTypeDistribution = [
   { type: "Day", count: 8, revenue: 240 },
@@ -149,8 +186,120 @@ export function DivePassAnalytics() {
   const useDiff = useBuckets.length
     ? (useBuckets[curMonth]?.total ?? 0) - (useBuckets[prevMonth]?.total ?? 0)
     : 0;
+
+  // --- Derived datasets: live rows when available, mock otherwise --------
+  const passTypeData = useMemo(() => {
+    if (!isLiveData || !inv) return passTypeDistribution;
+    const m = new Map<string, { count: number; revenue: number }>();
+    for (const r of inv) {
+      const t = r.passType || "Other";
+      const row = m.get(t) ?? { count: 0, revenue: 0 };
+      row.count += r.totalPasses || 0;
+      row.revenue += r.amount || 0;
+      m.set(t, row);
+    }
+    return [...m.entries()].map(([type, v]) => ({ type, ...v }));
+  }, [isLiveData, inv]);
+
+  const creditsData = useMemo(() => {
+    if (!isLiveData || !inv) return creditsUtilization;
+    const m = new Map<string, { purchased: number; used: number }>();
+    for (const r of inv) {
+      const t = r.passType || "Other";
+      const row = m.get(t) ?? { purchased: 0, used: 0 };
+      row.purchased += r.totalPasses || 0;
+      row.used += r.totalPasses - r.remainingPasses || 0;
+      m.set(t, row);
+    }
+    return [...m.entries()].map(([type, v]) => ({ type, ...v }));
+  }, [isLiveData, inv]);
+
+  const avgCreditsUsed = useMemo(() => {
+    if (!isLiveData || !inv) return null;
+    const purchased = inv.reduce((a, r) => a + (r.totalPasses || 0), 0);
+    const used = inv.reduce(
+      (a, r) => a + (r.totalPasses - r.remainingPasses || 0),
+      0
+    );
+    return purchased > 0 ? Math.round((used / purchased) * 100) : 0;
+  }, [isLiveData, inv]);
+
+  const revenueByTypeData = useMemo(() => {
+    if (!isLiveData || !inv) return revenueByType;
+    const m = new Map<
+      number,
+      {
+        month: string;
+        day: number;
+        weekly: number;
+        monthly: number;
+        annual: number;
+      }
+    >();
+    for (const r of inv) {
+      const k = periodKeyOf(r.passType || "");
+      const mi = monthIdx(r.createdAt);
+      if (!k || mi < 0) continue;
+      const row =
+        m.get(mi) ?? {
+          month: MONTH_LABELS[mi],
+          day: 0,
+          weekly: 0,
+          monthly: 0,
+          annual: 0,
+        };
+      row[k] += r.amount || 0;
+      m.set(mi, row);
+    }
+    return [...m.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v);
+  }, [isLiveData, inv]);
+
+  const revenueVsBurnData = useMemo(() => {
+    if (!isLiveData || !inv || !receipts) return revenueVsBurn;
+    const purchased = new Array(12).fill(0);
+    const used = new Array(12).fill(0);
+    for (const r of inv) {
+      const mi = monthIdx(r.createdAt);
+      if (mi < 0) continue;
+      purchased[mi] += r.totalPasses || 0;
+      used[mi] += r.totalPasses - r.remainingPasses || 0;
+    }
+    return MONTH_LABELS.map((month, i) => ({
+      month,
+      revenue: revBuckets[i]?.total ?? 0,
+      burnRate: purchased[i] > 0 ? Math.round((used[i] / purchased[i]) * 100) : 0,
+    })).filter((_, i) => purchased[i] > 0 || (revBuckets[i]?.total ?? 0) > 0);
+  }, [isLiveData, inv, receipts, revBuckets]);
+
+  // Facts for the floating insights widget — same live values as the cards.
+  const passInsight = useMemo(() => {
+    const rows = receipts ?? [];
+    const inventory = inv ?? [];
+    const remaining = inventory.reduce((a, r) => a + (r.remainingPasses || 0), 0);
+    const pending = rows.filter((r) => r.status === "Pending");
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    const oldest = pending.reduce((max, r) => {
+      const d = new Date((r.date || "") + "T00:00:00");
+      if (Number.isNaN(d.getTime())) return max;
+      return Math.max(max, (now.getTime() - d.getTime()) / 86400000);
+    }, 0);
+
+    return buildDivePassInsight({
+      live: isLiveData,
+      revenue: revenueTotal,
+      revenueDelta: revDiff,
+      passesSold: inUse,
+      passesRemaining: remaining,
+      pendingReceipts: pending.length,
+      oldestPendingDays: Math.round(oldest),
+      seed: now.getDate(),
+    });
+  }, [receipts, inv, isLiveData, revenueTotal, inUse, revDiff]);
+
   return (
     <div className="space-y-6">
+      <InsightWidget insight={passInsight} label="Dive Pass" />
       <Reveal>
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
           <StatCard
@@ -178,8 +327,8 @@ export function DivePassAnalytics() {
           <StatCard
             icon={Clock}
             label="Avg Credits Used"
-            value="68%"
-            delta="+5%"
+            value={avgCreditsUsed != null ? `${avgCreditsUsed}%` : "68%"}
+            delta={avgCreditsUsed != null ? "" : "+5%"}
           />
           <StatCard
             icon={AlertTriangle}
@@ -194,12 +343,15 @@ export function DivePassAnalytics() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Reveal delay={80}>
           <SectionCard title="Pass Type Distribution">
+            {isEmptyChartData(passTypeData) ? (
+              <ChartEmptyState className="h-[200px]" />
+            ) : (
             <div className="flex items-center gap-6">
               <div className="w-[200px] h-[200px]">
                 <ResponsiveContainer width="100%" height="100%">
                   <PieChart>
                     <Pie
-                      data={passTypeDistribution}
+                      data={passTypeData}
                       dataKey="count"
                       nameKey="type"
                       innerRadius={55}
@@ -208,7 +360,7 @@ export function DivePassAnalytics() {
                       stroke="var(--color-card)"
                       strokeWidth={2}
                     >
-                      {passTypeDistribution.map((_, i) => (
+                      {passTypeData.map((_, i) => (
                         <Cell key={i} fill={CHART_COLORS[i]} />
                       ))}
                     </Pie>
@@ -217,7 +369,7 @@ export function DivePassAnalytics() {
                 </ResponsiveContainer>
               </div>
               <div className="flex-1 space-y-2">
-                {passTypeDistribution.map((p, i) => (
+                {passTypeData.map((p, i) => (
                   <div
                     key={p.type}
                     className="flex items-center justify-between text-sm"
@@ -234,22 +386,26 @@ export function DivePassAnalytics() {
                         {p.count} passes
                       </span>
                       <span className="font-medium">
-                        ${p.revenue.toLocaleString()}
+                        ₱{p.revenue.toLocaleString()}
                       </span>
                     </div>
                   </div>
                 ))}
               </div>
             </div>
+            )}
           </SectionCard>
         </Reveal>
 
         <Reveal delay={120}>
           <SectionCard title="Credits Utilization">
+            {isEmptyChartData(creditsData) ? (
+              <ChartEmptyState className="h-[200px]" />
+            ) : (
             <div className="h-[200px]">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart
-                  data={creditsUtilization}
+                  data={creditsData}
                   margin={{ left: -12, right: 8 }}
                 >
                   <CartesianGrid
@@ -283,6 +439,7 @@ export function DivePassAnalytics() {
                 </BarChart>
               </ResponsiveContainer>
             </div>
+            )}
           </SectionCard>
         </Reveal>
       </div>
@@ -290,6 +447,9 @@ export function DivePassAnalytics() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Reveal delay={160}>
           <SectionCard title="Expiry Timeline">
+            {isEmptyChartData(expiryTimeline) ? (
+              <ChartEmptyState className="h-[200px]" />
+            ) : (
             <div className="h-[200px]">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart
@@ -336,6 +496,7 @@ export function DivePassAnalytics() {
                 </AreaChart>
               </ResponsiveContainer>
             </div>
+            )}
           </SectionCard>
         </Reveal>
 
@@ -351,9 +512,12 @@ export function DivePassAnalytics() {
                 Export CSV
               </Button>
             </div>
+            {isEmptyChartData(revenueByTypeData) ? (
+              <ChartEmptyState className="h-[200px]" />
+            ) : (
             <div className="h-[200px]">
               <ResponsiveContainer width="100%" height="100%">
-                <BarChart data={revenueByType} margin={{ left: -12, right: 8 }}>
+                <BarChart data={revenueByTypeData} margin={{ left: -12, right: 8 }}>
                   <CartesianGrid
                     strokeDasharray="3 3"
                     stroke="var(--color-border)"
@@ -398,6 +562,7 @@ export function DivePassAnalytics() {
                 </BarChart>
               </ResponsiveContainer>
             </div>
+            )}
           </SectionCard>
         </Reveal>
       </div>
@@ -432,10 +597,13 @@ export function DivePassAnalytics() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Reveal delay={320}>
           <SectionCard title="Revenue vs Credit Burn Rate">
+            {isEmptyChartData(revenueVsBurnData) ? (
+              <ChartEmptyState className="h-[200px]" />
+            ) : (
             <div className="h-[200px]">
               <ResponsiveContainer width="100%" height="100%">
                 <ComposedChart
-                  data={revenueVsBurn}
+                  data={revenueVsBurnData}
                   margin={{ left: -12, right: 8 }}
                 >
                   <defs>
@@ -510,11 +678,15 @@ export function DivePassAnalytics() {
                 </ComposedChart>
               </ResponsiveContainer>
             </div>
+            )}
           </SectionCard>
         </Reveal>
 
         <Reveal delay={360}>
           <SectionCard title="Pass Renewal Forecast">
+            {isEmptyChartData(renewalForecast) ? (
+              <ChartEmptyState className="h-[200px]" />
+            ) : (
             <div className="h-[200px]">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart
@@ -605,6 +777,7 @@ export function DivePassAnalytics() {
                 </AreaChart>
               </ResponsiveContainer>
             </div>
+            )}
           </SectionCard>
         </Reveal>
       </div>

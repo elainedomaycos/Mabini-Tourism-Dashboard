@@ -185,11 +185,11 @@ export function Field({
   value: React.ReactNode;
 }) {
   return (
-    <div className="rounded-lg bg-secondary/60 px-3 py-2">
+    <div className="rounded-lg bg-secondary/60 px-3 py-2 min-w-0 overflow-hidden">
       <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
         {label}
       </div>
-      <div className="font-medium mt-0.5">{value}</div>
+      <div className="font-medium mt-0.5 break-words">{value}</div>
     </div>
   );
 }
