@@ -1080,22 +1080,48 @@ export interface LiveStaffRow {
   fullName: string;
   role: "staff" | "superadmin";
   isActive: boolean;
+  /** 043: superadmin-set handover password not yet replaced by the staffer. */
+  mustChangePassword: boolean;
   createdAt: string;
 }
 
 async function fetchStaff(): Promise<LiveStaffRow[]> {
   const { data: rows, error } = await supabase
     .from("to_staff")
-    .select("id, email, full_name, role, is_active, created_at")
+    .select(
+      "id, email, full_name, role, is_active, created_at, must_change_password"
+    )
     .order("created_at", { ascending: true })
     .limit(100);
-  if (error) throw error;
+  if (error) {
+    // Pre-043 database (no must_change_password column): retry without it
+    // rather than showing an error — the flag simply can't exist yet.
+    if (/must_change_password/i.test(error.message)) {
+      const legacy = await supabase
+        .from("to_staff")
+        .select("id, email, full_name, role, is_active, created_at")
+        .order("created_at", { ascending: true })
+        .limit(100);
+      if (legacy.error) throw legacy.error;
+      return (legacy.data || []).map((s: any) => ({
+        _dbId: s.id,
+        email: s.email,
+        fullName: s.full_name,
+        role: s.role === "superadmin" ? "superadmin" : "staff",
+        isActive: s.is_active !== false,
+        mustChangePassword: false,
+        createdAt: dayOf(s.created_at),
+      }));
+    }
+    throw error;
+  }
   return (rows || []).map((s: any) => ({
     _dbId: s.id,
     email: s.email,
     fullName: s.full_name,
     role: s.role === "superadmin" ? "superadmin" : "staff",
     isActive: s.is_active !== false,
+    mustChangePassword: s.must_change_password === true,
     createdAt: dayOf(s.created_at),
   }));
 }

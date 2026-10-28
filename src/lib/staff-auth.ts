@@ -1,7 +1,6 @@
 import { createContext, useContext, useEffect, useState } from "react";
 import { toast } from "sonner";
 import { supabase, isSupabaseConfigured } from "./supabase";
-import { requestStaffPasswordReset } from "./request-staff-reset-fn";
 
 export type StaffRole = "staff" | "superadmin";
 
@@ -10,6 +9,12 @@ export interface StaffSession {
   email: string;
   fullName: string;
   role: StaffRole;
+  /**
+   * A superadmin reset this account's password (043) and the handover
+   * password hasn't been replaced yet — the dashboard must block everything
+   * until the staffer sets their own. False on pre-043 databases.
+   */
+  mustChangePassword: boolean;
 }
 
 /** Session available to the whole dashboard shell (drives useRole). */
@@ -28,11 +33,20 @@ function toSession(data: {
   email: string;
   full_name: string;
   role?: string | null;
+  must_change_password?: boolean | null;
 }): StaffSession {
   // Unknown role values fail closed to staff; superadmin is only ever
   // assigned explicitly (034 backfill or superadmin promotion).
   const role: StaffRole = data.role === "superadmin" ? "superadmin" : "staff";
-  return { userId: data.id, email: data.email, fullName: data.full_name, role };
+  return {
+    userId: data.id,
+    email: data.email,
+    fullName: data.full_name,
+    role,
+    // Fail closed to false: a pre-043 database has no column, and a false
+    // negative merely means no forced prompt (never a lockout).
+    mustChangePassword: data.must_change_password === true,
+  };
 }
 
 async function readStaffRow(
@@ -40,25 +54,49 @@ async function readStaffRow(
 ): Promise<{ row: StaffSession | null; error?: string }> {
   const { data, error } = await supabase
     .from("to_staff")
-    .select("id, email, full_name, is_active, role")
+    .select("id, email, full_name, is_active, role, must_change_password")
     .eq("id", userId)
     .maybeSingle();
   if (error) {
-    // Pre-034 database (no role column yet): fall back to the legacy select
-    // and treat the row as superadmin — exactly matching 034's backfill, so
-    // login keeps working across the migration window.
-    if (/column .*role|role.*column|42703/i.test(error.message)) {
+    // Migration-window resilience, in both directions:
+    // • Pre-043 (no must_change_password) but post-034: retry WITHOUT the
+    //   flag column — role still maps normally (staff vs superadmin).
+    // • Pre-034 (no role column): retry the legacy select and treat the row
+    //   as superadmin — exactly matching 034's backfill, so login keeps
+    //   working across that window.
+    // must_change_password defaults to false in both fallbacks (toSession),
+    // which can only mean "no forced prompt" — never a lockout.
+    const missingFlag = /must_change_password/i.test(error.message);
+    const missingRole =
+      /column .*role|role.*column|42703/i.test(error.message) && !missingFlag;
+    if (missingFlag || missingRole) {
+      const cols = ["id, email, full_name, is_active"];
+      if (!missingRole) cols.push("role");
       const legacy = await supabase
         .from("to_staff")
-        .select("id, email, full_name, is_active")
+        .select(cols.join(", "))
         .eq("id", userId)
         .maybeSingle();
+      // The dynamic column list defeats supabase-js's literal-type overload,
+      // so the row shape is declared here (mirrors the real columns above).
+      const row = legacy.data as
+        | {
+            id: string;
+            email: string;
+            full_name: string;
+            is_active: boolean | null;
+            role?: string | null;
+          }
+        | null;
       if (legacy.error) return { row: null, error: legacy.error.message };
-      if (!legacy.data) return { row: null };
-      if (!legacy.data.is_active) return { row: null, error: "deactivated" };
-      return {
-        row: { ...toSession(legacy.data), role: "superadmin" },
-      };
+      if (!row) return { row: null };
+      if (!row.is_active) return { row: null, error: "deactivated" };
+      if (missingRole) {
+        return {
+          row: { ...toSession(row), role: "superadmin" as const },
+        };
+      }
+      return { row: toSession(row) };
     }
     return { row: null, error: error.message };
   }
@@ -110,40 +148,10 @@ export async function signOutStaff(): Promise<void> {
 /* ------------------------- PASSWORD RESET ------------------------- */
 
 /**
- * Requests a password-recovery email.
- *
- * Delegates to a server function rather than calling Supabase directly: this
- * project shares a Supabase instance with the tourist-facing app, so signups
- * are enabled — and Supabase's own /recover would mint an auth.users row for
- * any address submitted to it. The server checks to_staff first and only
- * mails active staff.
- *
- * The result is deliberately identical for staff and non-staff addresses so
- * this form can't be used to enumerate who has an account; only a
- * project-wide rate limit comes back as an error.
- */
-export async function requestPasswordReset(
-  email: string
-): Promise<{ ok: true } | { ok: false; error: string }> {
-  if (!isSupabaseConfigured) {
-    return { ok: false, error: "Dashboard is not connected to Supabase yet." };
-  }
-  try {
-    const res = await requestStaffPasswordReset({ data: { email } });
-    if (res.ok) return { ok: true };
-    return { ok: false, error: res.message };
-  } catch {
-    return {
-      ok: false,
-      error: "Could not reach the server. Please try again shortly.",
-    };
-  }
-}
-
-/**
- * Sets a new password using the recovery session Supabase established from
- * the emailed link. Requires an active session — that session IS the proof
- * the requester controls the mailbox.
+ * Sets a new password with the caller's own session. Used by the
+ * forced-change screen after a superadmin-managed reset (reset-staff-
+ * password-fn.ts): the staff member is signed in with the handover password,
+ * and that session IS what authorizes the change.
  */
 export async function updateStaffPassword(
   password: string
@@ -155,10 +163,9 @@ export async function updateStaffPassword(
   if (error) {
     return {
       ok: false,
-      error:
-        /session|token|auth/i.test(error.message)
-          ? "This reset link has expired or was already used. Request a new one."
-          : error.message,
+      error: /session|token|auth/i.test(error.message)
+        ? "Your session expired. Sign in again with the password your Super Admin gave you."
+        : error.message,
     };
   }
   return { ok: true };
@@ -258,11 +265,6 @@ export async function requireLiveSession(): Promise<boolean> {
 export function useStaffSession() {
   const [session, setSession] = useState<StaffSession | null>(null);
   const [checking, setChecking] = useState(true);
-  // A recovery link signs the user in, but with a token scoped only to
-  // "change your password". Admitting it as a normal session would drop
-  // them into the dashboard without ever capturing a new password, so the
-  // shell routes them to /reset-password instead.
-  const [recovery, setRecovery] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -297,10 +299,6 @@ export function useStaffSession() {
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((event, s) => {
-      if (event === "PASSWORD_RECOVERY") {
-        setRecovery(true);
-        return;
-      }
       if (event === "SIGNED_OUT") {
         setSession(null);
         setChecking(false);
@@ -316,5 +314,5 @@ export function useStaffSession() {
     };
   }, []);
 
-  return { session, checking, setSession, recovery };
+  return { session, checking, setSession };
 }
