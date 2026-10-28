@@ -77,6 +77,7 @@ import {
   TriangleAlert,
   Ban,
   Fingerprint,
+  KeyRound,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -153,19 +154,16 @@ import {
   PopoverTrigger,
   PopoverContent,
 } from "@/components/ui/popover";
-import {
-  ToggleGroup,
-  ToggleGroupItem,
-} from "@/components/ui/toggle-group";
+import { ToggleGroup, ToggleGroupItem } from "@/components/ui/toggle-group";
 import { toast } from "sonner";
 import { Toaster } from "@/components/ui/sonner";
 import { Pagination, usePagination } from "@/components/ui/pagination";
 import type { DiveSiteHeatmap as DiveSiteHeatmapType } from "@/components/DiveSiteHeatmap";
 import { RejectReasonDialog } from "@/components/RejectReasonDialog";
 import {
-  requestPasswordReset,
   signInStaff,
   signOutStaff,
+  updateStaffPassword,
   useStaffSession,
   useStaffSessionValue,
   requireLiveSession,
@@ -175,6 +173,8 @@ import {
 } from "@/lib/staff-auth";
 import { createStaffAccount } from "@/lib/create-staff-fn";
 import { deleteStaffAccount } from "@/lib/delete-staff-fn";
+import { resetStaffPassword } from "@/lib/reset-staff-password-fn";
+import { clearPasswordFlag } from "@/lib/clear-password-flag-fn";
 import {
   useLiveMode,
   isLiveMode,
@@ -237,9 +237,15 @@ import { DivePassAnalytics } from "@/components/sections/DivePassAnalytics";
 import { EstablishmentAnalytics } from "@/components/sections/EstablishmentAnalytics";
 import { EstablishmentsPage } from "@/components/sections/EstablishmentsPage";
 import { DiveOpsPage } from "@/components/sections/DiveOpsPage";
-import { DivePassPage, PassPricingEditor } from "@/components/sections/DivePassPage";
+import {
+  DivePassPage,
+  PassPricingEditor,
+} from "@/components/sections/DivePassPage";
 import { InsightWidget } from "@/components/InsightWidget";
-import { ChartEmptyState, isEmptyChartData } from "@/components/ChartEmptyState";
+import {
+  ChartEmptyState,
+  isEmptyChartData,
+} from "@/components/ChartEmptyState";
 import { MABINI_BARANGAYS } from "@/lib/barangays";
 import { DIVE_DIFFICULTIES, DIVING_TYPES } from "@/lib/diveTaxonomy";
 import { buildOverviewInsight, buildOperatorInsight } from "@/lib/insights";
@@ -1092,7 +1098,8 @@ const operatorActivity = [
   { name: "Aqua Ventures", manifestos: 38, credits: 780 },
   { name: "Nautilus Exp.", manifestos: 29, credits: 600 },
 ];
-const auditLogs: { date: string; t: string; who: string; action: string }[] = [];
+const auditLogs: { date: string; t: string; who: string; action: string }[] =
+  [];
 
 const CHART_COLORS = [
   "var(--color-chart-1)",
@@ -1350,9 +1357,7 @@ function useRole() {
 export function usePermission() {
   const { canAct, canAdmin } = useRole();
   const deny = useCallback(
-    (
-      msg = "Read-only view — this action is locked.",
-    ) => {
+    (msg = "Read-only view — this action is locked.") => {
       toast.error("Action locked", { description: msg });
     },
     [],
@@ -1379,7 +1384,12 @@ function useTheme() {
   return { theme, toggle };
 }
 
-type NotifKind = "receipt" | "application" | "manifesto" | "announcement" | "generic";
+type NotifKind =
+  | "receipt"
+  | "application"
+  | "manifesto"
+  | "announcement"
+  | "generic";
 type Notif = {
   id: string;
   kind: NotifKind;
@@ -1494,9 +1504,7 @@ function useNotifications() {
     ]);
     // Optimistic: the badge should drop the instant you click.
     qc.setQueryData<LiveNotificationRow[]>(["live", "notifications"], (old) =>
-      (old ?? []).map((n) =>
-        idSet.has(n._dbId) ? { ...n, isRead: true } : n,
-      ),
+      (old ?? []).map((n) => (idSet.has(n._dbId) ? { ...n, isRead: true } : n)),
     );
     try {
       await markNotificationsRead(ids);
@@ -1662,21 +1670,8 @@ function Reveal({
 
 /* ------------------------------ APP ROOT ------------------------------ */
 function App() {
-  const { session, checking, setSession, recovery } = useStaffSession();
-  const navigate = useNavigate({ from: "/" });
-  // A recovery link signs the user in with a password-change-scoped token.
-  // Hand it to the reset page instead of admitting it as a normal session.
-  useEffect(() => {
-    if (recovery) navigate({ to: "/reset-password", replace: true });
-  }, [recovery, navigate]);
+  const { session, checking, setSession } = useStaffSession();
   if (checking) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background">
-        <Loader2 className="size-8 animate-spin text-primary" />
-      </div>
-    );
-  }
-  if (recovery) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background">
         <Loader2 className="size-8 animate-spin text-primary" />
@@ -1688,19 +1683,209 @@ function App() {
       <Toaster position="top-right" richColors />
       {session ? (
         <StaffSessionContext.Provider value={session}>
-          <Dashboard
-            session={session}
-            onLogout={async () => {
-              pushAuditLog(`Signed out ${session.email}`);
-              await signOutStaff();
-              setSession(null);
-            }}
-          />
+          {session.mustChangePassword ? (
+            <ForcedPasswordChange
+              session={session}
+              onDone={(s) => setSession(s)}
+            />
+          ) : (
+            <Dashboard
+              session={session}
+              onLogout={async () => {
+                pushAuditLog(`Signed out ${session.email}`);
+                await signOutStaff();
+                setSession(null);
+              }}
+            />
+          )}
         </StaffSessionContext.Provider>
       ) : (
         <Login onLogin={(s) => setSession(s)} />
       )}
     </>
+  );
+}
+
+/* ------------------------- FORCED PASSWORD CHANGE ------------------------- */
+/**
+ * Post-reset gate: a superadmin set this account's handover password (043)
+ * and the staffer hasn't chosen their own yet. Rendered INSTEAD of the
+ * dashboard shell, so nothing else mounts until the flag clears — the flag
+ * ships inside the verified session row, which makes bypassing impossible
+ * without a new session row. Reuses updateStaffPassword (own-session
+ * password change) plus the self-only clear-password-flag server fn; 034
+ * deliberately gives staff no client-side UPDATE on to_staff.
+ */
+function ForcedPasswordChange({
+  session,
+  onDone,
+}: {
+  session: StaffSession;
+  onDone: (s: StaffSession) => void;
+}) {
+  const [pw, setPw] = useState("");
+  const [confirm, setConfirm] = useState("");
+  const [showPw, setShowPw] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    if (pw.length < 8) {
+      setError("Password must be at least 8 characters.");
+      return;
+    }
+    if (pw !== confirm) {
+      setError("Passwords do not match.");
+      return;
+    }
+    setBusy(true);
+    try {
+      const res = await updateStaffPassword(pw);
+      if (!res.ok) {
+        // A dead handover session can't recover here — fall back to sign-in.
+        setError(res.error);
+        if (/session|token|auth/i.test(res.error)) await signOutStaff();
+        return;
+      }
+      const accessToken = await getAccessToken();
+      if (!accessToken) {
+        setError("Your session expired. Sign in again with the new password.");
+        await signOutStaff().catch(() => {});
+        return;
+      }
+      const flag = await clearPasswordFlag({ data: { accessToken } }).catch(
+        () => ({ ok: false as const }),
+      );
+      if (!flag.ok) {
+        // Password changed but the dashboard is still gated: sign out and
+        // let the next sign-in land on a clean, unflagged session.
+        toast.error("Almost done", {
+          description:
+            "Your password was updated. Sign in again to continue to the dashboard.",
+        });
+        await signOutStaff().catch(() => {});
+        return;
+      }
+      pushAuditLog(`Completed forced password change (${session.email})`);
+      onDone({ ...session, mustChangePassword: false });
+      toast.success("Password set", {
+        description: "You're signed in with your own password from now on.",
+      });
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Could not update password.",
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen grid lg:grid-cols-2 bg-background">
+      {/* Left hero — reuses reset screen layout */}
+      <div className="relative hidden lg:flex flex-col justify-between p-12 gradient-primary text-primary-foreground overflow-hidden">
+        <div className="relative flex items-center gap-2 font-display font-bold text-xl">
+          <img
+            src="/logo.png"
+            alt="Mabini, Batangas logo"
+            className="size-9 rounded-xl object-contain"
+          />
+          Mabini, Batangas
+        </div>
+        <div className="relative space-y-6 max-w-md">
+          <h1 className="text-5xl font-display font-bold leading-[1.05]">
+            Smarter tourism. Sustainable seas.
+          </h1>
+          <p className="text-primary-foreground/85 text-lg">
+            A unified platform for managing dive tourism, identifying visitors,
+            and supporting sustainable coastal development.
+          </p>
+        </div>
+        <div className="relative text-sm text-primary-foreground/70">
+          © 2026 Mabini, Batangas — Tourism Office
+        </div>
+      </div>
+
+      {/* Right form */}
+      <div className="flex items-center justify-center p-8">
+        <form onSubmit={submit} className="w-full max-w-md space-y-6">
+          <div>
+            <div className="flex size-11 items-center justify-center rounded-xl bg-primary-soft text-primary">
+              <ShieldCheck className="size-5" />
+            </div>
+            <h2 className="mt-4 text-3xl font-display font-bold text-foreground">
+              Set your new password
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              You're signed in with a temporary password set by a Super Admin.
+              Choose your own password to open the dashboard — all previous
+              sessions were already ended.
+            </p>
+          </div>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label htmlFor="forced-new-pw">New password</Label>
+              <div className="relative">
+                <Input
+                  id="forced-new-pw"
+                  type={showPw ? "text" : "password"}
+                  value={pw}
+                  onChange={(e) => setPw(e.target.value)}
+                  autoComplete="new-password"
+                  className="pr-10"
+                  disabled={busy}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPw((v) => !v)}
+                  title={showPw ? "Hide password" : "Show password"}
+                  aria-label={showPw ? "Hide password" : "Show password"}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  {showPw ? (
+                    <EyeOff className="size-4" />
+                  ) : (
+                    <Eye className="size-4" />
+                  )}
+                </button>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="forced-confirm-pw">Confirm password</Label>
+              <Input
+                id="forced-confirm-pw"
+                type={showPw ? "text" : "password"}
+                value={confirm}
+                onChange={(e) => setConfirm(e.target.value)}
+                autoComplete="new-password"
+                disabled={busy}
+              />
+            </div>
+          </div>
+          <Button
+            type="submit"
+            disabled={busy}
+            className="w-full h-11 gradient-primary text-primary-foreground shadow-glow hover:opacity-95"
+          >
+            {busy ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <>
+                Save password <ChevronRight className="size-4 ml-1" />
+              </>
+            )}
+          </Button>
+          {error && (
+            <p className="text-xs text-center text-destructive">{error}</p>
+          )}
+          <p className="text-xs text-center text-muted-foreground">
+            Signed in as {session.email}
+          </p>
+        </form>
+      </div>
+    </div>
   );
 }
 
@@ -1711,35 +1896,6 @@ function Login({ onLogin }: { onLogin: (s: StaffSession) => void }) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [showPw, setShowPw] = useState(false);
-  const [resetOpen, setResetOpen] = useState(false);
-  const [resetEmail, setResetEmail] = useState("");
-  const [resetBusy, setResetBusy] = useState(false);
-  const [resetError, setResetError] = useState("");
-  const [resetSent, setResetSent] = useState(false);
-
-  const submitReset = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setResetError("");
-    if (!resetEmail.trim()) {
-      setResetError("Enter your staff email address.");
-      return;
-    }
-    setResetBusy(true);
-    const res = await requestPasswordReset(resetEmail);
-    setResetBusy(false);
-    if (!res.ok) {
-      setResetError(res.error);
-      return;
-    }
-    setResetSent(true);
-  };
-
-  const closeReset = () => {
-    setResetOpen(false);
-    setResetEmail("");
-    setResetError("");
-    setResetSent(false);
-  };
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1846,16 +2002,7 @@ function Login({ onLogin }: { onLogin: (s: StaffSession) => void }) {
               />
             </div>
             <div className="space-y-2">
-              <div className="flex justify-between">
-                <Label htmlFor="pw">Password</Label>
-                <button
-                  type="button"
-                  onClick={() => setResetOpen(true)}
-                  className="text-xs text-primary hover:underline"
-                >
-                  Forgot?
-                </button>
-              </div>
+              <Label htmlFor="pw">Password</Label>
               <div className="relative">
                 <Input
                   id="pw"
@@ -1896,88 +2043,27 @@ function Login({ onLogin }: { onLogin: (s: StaffSession) => void }) {
             {busy ? (
               <Loader2 className="size-4 animate-spin" />
             ) : (
-              <>Sign in <ChevronRight className="size-4 ml-1" /></>
+              <>
+                Sign in <ChevronRight className="size-4 ml-1" />
+              </>
             )}
           </Button>
           {error && (
             <p className="text-xs text-center text-destructive">{error}</p>
           )}
+          {/* Staff addresses don't always back a real mailbox (043), so
+              password recovery was moved from an emailed link to a
+              superadmin-managed flow in Settings → Manage Users. */}
+          <p className="text-xs text-center text-muted-foreground">
+            Forgot your password? Ask a Super Admin to set you a temporary one
+            (Settings → Manage Users).
+          </p>
           <p className="text-xs text-center text-muted-foreground">
             Protected by <ShieldCheck className="inline size-3.5 -mt-0.5" />{" "}
             Mabini, Batangas security
           </p>
         </form>
       </div>
-
-      {/* Password reset request */}
-      <Dialog
-        open={resetOpen}
-        onOpenChange={(open) => (open ? setResetOpen(true) : closeReset())}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle className="font-display">
-              {resetSent ? "Check your email" : "Reset your password"}
-            </DialogTitle>
-            <DialogDescription>
-              {resetSent
-                ? "If that address belongs to a Tourism Office account, a reset link is on its way. The link expires in 60 minutes."
-                : "Enter your staff email and we'll send you a link to choose a new password."}
-            </DialogDescription>
-          </DialogHeader>
-          {resetSent ? (
-            <DialogFooter>
-              <Button
-                type="button"
-                className="w-full h-11 gradient-primary text-primary-foreground"
-                onClick={closeReset}
-              >
-                Back to sign in
-              </Button>
-            </DialogFooter>
-          ) : (
-            <form onSubmit={submitReset} className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="reset-email">Staff email</Label>
-                <Input
-                  id="reset-email"
-                  type="email"
-                  autoComplete="email"
-                  placeholder="you@mabini.gov.ph"
-                  value={resetEmail}
-                  onChange={(e) => setResetEmail(e.target.value)}
-                  disabled={resetBusy}
-                />
-              </div>
-              {resetError && (
-                <p className="text-xs text-destructive">{resetError}</p>
-              )}
-              <DialogFooter>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={closeReset}
-                  disabled={resetBusy}
-                  className="h-11"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="submit"
-                  disabled={resetBusy}
-                  className="h-11 gradient-primary text-primary-foreground"
-                >
-                  {resetBusy ? (
-                    <Loader2 className="size-4 animate-spin" />
-                  ) : (
-                    "Send reset link"
-                  )}
-                </Button>
-              </DialogFooter>
-            </form>
-          )}
-        </DialogContent>
-      </Dialog>
     </div>
   );
 }
@@ -2040,7 +2126,7 @@ function DashboardShell({
   // depth/barangay keys match the mock shape).
   const paletteSites = useMemo(
     () => (liveSitesShell.data ?? []).map(toSiteView),
-    [liveSitesShell.data]
+    [liveSitesShell.data],
   );
   const { role, canAdmin } = useRole();
   const { theme, toggle } = useTheme();
@@ -2110,50 +2196,48 @@ function DashboardShell({
                 <div key={group}>
                   <div
                     className={`px-3 text-[10px] font-semibold uppercase tracking-widest mb-2 ${
-                      hasActiveChild
-                        ? "text-primary"
-                        : "text-muted-foreground"
+                      hasActiveChild ? "text-primary" : "text-muted-foreground"
                     }`}
                   >
                     {group}
                   </div>
                   <ul className="space-y-1">
-                      {groupItems.map((n) => {
-                        const active = n.key === section;
-                        const Icon = n.icon;
-                        return (
-                          <li key={n.key}>
-                            <button
-                              onClick={() =>
-                                setFilters({
-                                  section: n.key,
-                                  q: "",
-                                  status: "All",
-                                  nationality: "All",
-                                  level: "All",
-                                  site: "All",
-                                  difficulty: "All",
-                                  siteType: "All",
-                                  dateFrom: "",
-                                  dateTo: "",
-                                  tab: "",
-                                })
-                              }
-                              className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all ${
-                                active
-                                  ? "bg-primary-soft text-primary font-semibold"
-                                  : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground hover:translate-x-0.5"
-                              }`}
-                            >
-                              <Icon
-                                className={`size-4 ${active ? "text-primary" : "text-muted-foreground"}`}
-                              />
-                              {n.label}
-                            </button>
-                          </li>
-                        );
-                      })}
-                    </ul>
+                    {groupItems.map((n) => {
+                      const active = n.key === section;
+                      const Icon = n.icon;
+                      return (
+                        <li key={n.key}>
+                          <button
+                            onClick={() =>
+                              setFilters({
+                                section: n.key,
+                                q: "",
+                                status: "All",
+                                nationality: "All",
+                                level: "All",
+                                site: "All",
+                                difficulty: "All",
+                                siteType: "All",
+                                dateFrom: "",
+                                dateTo: "",
+                                tab: "",
+                              })
+                            }
+                            className={`w-full flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-all ${
+                              active
+                                ? "bg-primary-soft text-primary font-semibold"
+                                : "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground hover:translate-x-0.5"
+                            }`}
+                          >
+                            <Icon
+                              className={`size-4 ${active ? "text-primary" : "text-muted-foreground"}`}
+                            />
+                            {n.label}
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
                 </div>
               );
             })}
@@ -2166,10 +2250,16 @@ function DashboardShell({
                 </AvatarFallback>
               </Avatar>
               <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium truncate" title={session.fullName}>
+                <div
+                  className="text-sm font-medium truncate"
+                  title={session.fullName}
+                >
                   {session.fullName}
                 </div>
-                <div className="text-xs text-muted-foreground truncate" title={session.email}>
+                <div
+                  className="text-xs text-muted-foreground truncate"
+                  title={session.email}
+                >
                   {session.email}
                 </div>
               </div>
@@ -2297,7 +2387,10 @@ function DashboardShell({
               <NotificationsBell />
               <LiveBadge />
               <RoleBadge />
-              <Avatar className="size-9" title={`${session.fullName} (${session.email})`}>
+              <Avatar
+                className="size-9"
+                title={`${session.fullName} (${session.email})`}
+              >
                 <AvatarFallback className="bg-primary text-primary-foreground text-xs">
                   {staffInitials(session.fullName)}
                 </AvatarFallback>
@@ -2819,7 +2912,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
   const ovSitesLive = isLive && !!liveSitesOv.data;
   const siteBuckets = useMemo(
     () => bucketByMonth(ovSites, (s) => s.createdAt ?? ""),
-    [ovSites]
+    [ovSites],
   );
   const ovTourists = useMemo(() => {
     const rows = liveTouristsOv.data ?? tourists;
@@ -2834,63 +2927,70 @@ function Overview({ session }: { session?: StaffSession | null }) {
   // Real month buckets over live rows (counts + revenue). Replaces the old
   // `scale * 3` multiplier that faked responsiveness on mock series.
   const touristBuckets = useMemo(
-    () => bucketByMonth(ovTourists, (t: any) => t.registered ?? t.createdAt ?? ""),
-    [ovTourists]
+    () =>
+      bucketByMonth(ovTourists, (t: any) => t.registered ?? t.createdAt ?? ""),
+    [ovTourists],
   );
   const diveBuckets = useMemo(() => {
     const counts = bucketByMonth(
       ovManifests,
       (m: any) => m.date,
-      (m: any) => m.divers || 0
+      (m: any) => m.divers || 0,
     );
     return counts;
   }, [ovManifests]);
   const appBuckets = useMemo(
     () => bucketByMonth(ovApps, (a: any) => a.submitted ?? ""),
-    [ovApps]
+    [ovApps],
   );
   const receiptBuckets = useMemo(
     () =>
       bucketByMonth(
         ovReceipts,
         (r: any) => r.date,
-        (r: any) => r.amountNum || 0
+        (r: any) => r.amountNum || 0,
       ),
-    [ovReceipts]
+    [ovReceipts],
   );
   const activeBuckets = useMemo(
     () =>
       bucketByMonth(
         ovTourists.filter((t: any) => t.status === "Active"),
-        (t: any) => t.createdAt ?? t.registered ?? ""
+        (t: any) => t.createdAt ?? t.registered ?? "",
       ),
-    [ovTourists]
+    [ovTourists],
   );
   const todayISO = new Date().toISOString().slice(0, 10);
-  const yesterdayISO = new Date(Date.now() - 86400000).toISOString().slice(0, 10);
+  const yesterdayISO = new Date(Date.now() - 86400000)
+    .toISOString()
+    .slice(0, 10);
   const todayDivers = useMemo(
     () =>
       ovManifests
         .filter((m: any) => m.date === todayISO)
         .reduce((a, m: any) => a + (m.divers || 0), 0),
-    [ovManifests, todayISO]
+    [ovManifests, todayISO],
   );
   const yesterdayDivers = useMemo(
     () =>
       ovManifests
         .filter((m: any) => m.date === yesterdayISO)
         .reduce((a, m: any) => a + (m.divers || 0), 0),
-    [ovManifests, yesterdayISO]
+    [ovManifests, yesterdayISO],
   );
   const monthIdxNow = new Date().getMonth();
   const monthIdxPrev = (monthIdxNow + 11) % 12;
-  const momDiff = (buckets: MonthBucket[], pick: (b: MonthBucket) => number) => {
+  const momDiff = (
+    buckets: MonthBucket[],
+    pick: (b: MonthBucket) => number,
+  ) => {
     const diff = pick(buckets[monthIdxNow]) - pick(buckets[monthIdxPrev]);
     return { diff, label: `${diff >= 0 ? "+" : ""}${diff}`, up: diff >= 0 };
   };
 
   const trendData = useMemo(() => {
-    if (!ovLive) return monthlyTrends.filter((d) => visibleMonths.includes(d.m));
+    if (!ovLive)
+      return monthlyTrends.filter((d) => visibleMonths.includes(d.m));
     const all = touristBuckets.map((b, i) => ({
       m: b.m,
       tourists: b.count,
@@ -2984,15 +3084,15 @@ function Overview({ session }: { session?: StaffSession | null }) {
   }, [ovLive, ovManifests, scale]);
   const liveTotalDivers = useMemo(
     () => ovManifests.reduce((a, m: any) => a + (m.divers || 0), 0),
-    [ovManifests]
+    [ovManifests],
   );
   const totalTourists = useMemo(
     () => trendData.reduce((a, m) => a + m.tourists, 0),
-    [trendData]
+    [trendData],
   );
   const totalDives = useMemo(
     () => trendData.reduce((a, m) => a + m.dives, 0),
-    [trendData]
+    [trendData],
   );
 
   // Hoisted out of the facts memo: momDiff/monthRevenueOf are redefined every
@@ -3001,11 +3101,9 @@ function Overview({ session }: { session?: StaffSession | null }) {
   const insightTouristDelta = ovLive
     ? momDiff(touristBuckets, (b) => b.count).diff
     : 47;
-  const insightRevenue = ovLive
-    ? receiptBuckets[monthIdxNow]?.total ?? 0
-    : 0;
+  const insightRevenue = ovLive ? (receiptBuckets[monthIdxNow]?.total ?? 0) : 0;
   const insightRevenuePrev = ovLive
-    ? receiptBuckets[monthIdxPrev]?.total ?? 0
+    ? (receiptBuckets[monthIdxPrev]?.total ?? 0)
     : 0;
 
   // Facts for the floating insights widget (src/lib/insights.ts). Derived from
@@ -3033,7 +3131,8 @@ function Overview({ session }: { session?: StaffSession | null }) {
       0,
     );
     const expiringPasses = ovTourists.filter((t: any) => {
-      if (t.status !== "Active" || !t.expires || t.expires === "—") return false;
+      if (t.status !== "Active" || !t.expires || t.expires === "—")
+        return false;
       const exp = new Date(t.expires + "T00:00:00");
       if (Number.isNaN(exp.getTime())) return false;
       const diff = (exp.getTime() - now.getTime()) / 86400000;
@@ -3045,7 +3144,9 @@ function Overview({ session }: { session?: StaffSession | null }) {
       const t = m.diveType;
       if (t) diveTypeCounts.set(t, (diveTypeCounts.get(t) || 0) + 1);
     }
-    const topType = [...diveTypeCounts.entries()].sort((a, b) => b[1] - a[1])[0];
+    const topType = [...diveTypeCounts.entries()].sort(
+      (a, b) => b[1] - a[1],
+    )[0];
     const totalTyped = [...diveTypeCounts.values()].reduce((a, c) => a + c, 0);
 
     return {
@@ -3070,7 +3171,8 @@ function Overview({ session }: { session?: StaffSession | null }) {
           ? (topSiteRow.value / liveTotalDivers) * 100
           : 0,
       topDiveType: topType?.[0] ?? null,
-      topDiveTypeShare: topType && totalTyped > 0 ? (topType[1] / totalTyped) * 100 : 0,
+      topDiveTypeShare:
+        topType && totalTyped > 0 ? (topType[1] / totalTyped) * 100 : 0,
       activeSites: ovLive
         ? ovSites.filter((s: any) => s.status === "Active").length
         : 12,
@@ -3098,7 +3200,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
 
   const overviewInsight = useMemo(
     () => buildOverviewInsight(insightFacts),
-    [insightFacts]
+    [insightFacts],
   );
 
   return (
@@ -3130,9 +3232,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
                 {ovLive ? (
                   <>
                     {todayDivers} dives on the water{" "}
-                    <span className="underline decoration-white/40">
-                      today
-                    </span>
+                    <span className="underline decoration-white/40">today</span>
                   </>
                 ) : (
                   <>
@@ -3144,10 +3244,10 @@ function Overview({ session }: { session?: StaffSession | null }) {
               <p className="mt-1 text-primary-foreground/80 max-w-xl">
                 {(() => {
                   const pendingApps = ovApps.filter(
-                    (a: any) => a.status === "Pending"
+                    (a: any) => a.status === "Pending",
                   ).length;
                   const pendingReceipts = ovReceipts.filter(
-                    (r: any) => r.status === "Pending"
+                    (r: any) => r.status === "Pending",
                   ).length;
                   return `${pendingApps} operator application${pendingApps !== 1 ? "s" : ""} and ${pendingReceipts} receipt${pendingReceipts !== 1 ? "s" : ""} are waiting on your review.`;
                 })()}
@@ -3206,20 +3306,16 @@ function Overview({ session }: { session?: StaffSession | null }) {
           {(() => {
             const tDelta = momDiff(touristBuckets, (b) => b.count);
             const aDelta = momDiff(activeBuckets, (b) => b.count);
-            const eDelta = momDiff(appBuckets, (b) =>
-              b.count
-            );
+            const eDelta = momDiff(appBuckets, (b) => b.count);
             const approvedCount = ovApps.filter(
-              (a: any) => a.status === "Approved"
+              (a: any) => a.status === "Approved",
             ).length;
             const dayDiff = todayDivers - yesterdayDivers;
             const cards = [
               {
                 icon: Users,
                 label: "Tourists",
-                value: ovLive
-                  ? String(ovTourists.length)
-                  : "810",
+                value: ovLive ? String(ovTourists.length) : "810",
                 delta: ovLive ? tDelta.label : "+47",
                 up: ovLive ? tDelta.up : true,
                 target: {
@@ -3237,7 +3333,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
                 value: ovLive
                   ? String(
                       ovTourists.filter((t: any) => t.status === "Active")
-                        .length
+                        .length,
                     )
                   : "358",
                 delta: ovLive ? aDelta.label : "+12",
@@ -3248,9 +3344,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
                 icon: Waves,
                 label: "Today's Dives",
                 value: ovLive ? String(todayDivers) : "28",
-                delta: ovLive
-                  ? `${dayDiff >= 0 ? "+" : ""}${dayDiff}`
-                  : "+6",
+                delta: ovLive ? `${dayDiff >= 0 ? "+" : ""}${dayDiff}` : "+6",
                 up: ovLive ? dayDiff >= 0 : true,
                 target: { section: "dive-ops", tab: "manifestos" },
               },
@@ -3262,27 +3356,27 @@ function Overview({ session }: { session?: StaffSession | null }) {
                 up: ovLive ? eDelta.up : true,
                 target: { section: "establishments", tab: "registered" },
               },
-            {
-              icon: MapPin,
-              label: "Active Sites",
-              value: String(
-                ovSites.filter((s) => s.status === "Active").length,
-              ),
-              delta: ovSitesLive
-                ? (() => {
-                    const d =
-                      siteBuckets[monthIdxNow].count -
-                      siteBuckets[monthIdxPrev].count;
-                    return `${d >= 0 ? "+" : ""}${d}`;
-                  })()
-                : "+1",
-              up: ovSitesLive
-                ? siteBuckets[monthIdxNow].count -
-                    siteBuckets[monthIdxPrev].count >=
-                  0
-                : true,
-              target: { section: "dive-ops", tab: "sites", q: "" },
-            },
+              {
+                icon: MapPin,
+                label: "Active Sites",
+                value: String(
+                  ovSites.filter((s) => s.status === "Active").length,
+                ),
+                delta: ovSitesLive
+                  ? (() => {
+                      const d =
+                        siteBuckets[monthIdxNow].count -
+                        siteBuckets[monthIdxPrev].count;
+                      return `${d >= 0 ? "+" : ""}${d}`;
+                    })()
+                  : "+1",
+                up: ovSitesLive
+                  ? siteBuckets[monthIdxNow].count -
+                      siteBuckets[monthIdxPrev].count >=
+                    0
+                  : true,
+                target: { section: "dive-ops", tab: "sites", q: "" },
+              },
             ];
             return cards.map((s) => (
               <button
@@ -3333,83 +3427,83 @@ function Overview({ session }: { session?: StaffSession | null }) {
               {isEmptyChartData(trendData) ? (
                 <ChartEmptyState className="h-72" />
               ) : (
-              <ResponsiveContainer>
-                <AreaChart
-                  data={trendData}
-                  margin={{ left: -12, right: 8, top: 8 }}
-                  onClick={(e) =>
-                    e?.activePayload?.[0]?.payload &&
-                    setDrillMonth(e.activePayload[0].payload)
-                  }
-                >
-                  <defs>
-                    <linearGradient id="areaP" x1="0" y1="0" x2="0" y2="1">
-                      <stop
-                        offset="0%"
-                        stopColor="var(--color-primary)"
-                        stopOpacity={0.35}
-                      />
-                      <stop
-                        offset="100%"
-                        stopColor="var(--color-primary)"
-                        stopOpacity={0}
-                      />
-                    </linearGradient>
-                    <linearGradient id="areaS" x1="0" y1="0" x2="0" y2="1">
-                      <stop
-                        offset="0%"
-                        stopColor="var(--color-primary-glow)"
-                        stopOpacity={0.25}
-                      />
-                      <stop
-                        offset="100%"
-                        stopColor="var(--color-primary-glow)"
-                        stopOpacity={0}
-                      />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid
-                    stroke="var(--color-border)"
-                    strokeDasharray="3 6"
-                    vertical={false}
-                  />
-                  <XAxis
-                    dataKey="m"
-                    stroke="var(--color-muted-foreground)"
-                    fontSize={12}
-                    tickLine={false}
-                    axisLine={false}
-                  />
-                  <YAxis
-                    stroke="var(--color-muted-foreground)"
-                    fontSize={12}
-                    tickLine={false}
-                    axisLine={false}
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      background: "var(--color-card)",
-                      border: "1px solid var(--color-border)",
-                      borderRadius: 12,
-                      fontSize: 12,
-                    }}
-                  />
-                  <Area
-                    type="monotone"
-                    dataKey="dives"
-                    stroke="var(--color-primary-glow)"
-                    strokeWidth={2}
-                    fill="url(#areaS)"
-                  />
-                  <Area
-                    type="monotone"
-                    dataKey="tourists"
-                    stroke="var(--color-primary)"
-                    strokeWidth={2.5}
-                    fill="url(#areaP)"
-                  />
-                </AreaChart>
-              </ResponsiveContainer>
+                <ResponsiveContainer>
+                  <AreaChart
+                    data={trendData}
+                    margin={{ left: -12, right: 8, top: 8 }}
+                    onClick={(e) =>
+                      e?.activePayload?.[0]?.payload &&
+                      setDrillMonth(e.activePayload[0].payload)
+                    }
+                  >
+                    <defs>
+                      <linearGradient id="areaP" x1="0" y1="0" x2="0" y2="1">
+                        <stop
+                          offset="0%"
+                          stopColor="var(--color-primary)"
+                          stopOpacity={0.35}
+                        />
+                        <stop
+                          offset="100%"
+                          stopColor="var(--color-primary)"
+                          stopOpacity={0}
+                        />
+                      </linearGradient>
+                      <linearGradient id="areaS" x1="0" y1="0" x2="0" y2="1">
+                        <stop
+                          offset="0%"
+                          stopColor="var(--color-primary-glow)"
+                          stopOpacity={0.25}
+                        />
+                        <stop
+                          offset="100%"
+                          stopColor="var(--color-primary-glow)"
+                          stopOpacity={0}
+                        />
+                      </linearGradient>
+                    </defs>
+                    <CartesianGrid
+                      stroke="var(--color-border)"
+                      strokeDasharray="3 6"
+                      vertical={false}
+                    />
+                    <XAxis
+                      dataKey="m"
+                      stroke="var(--color-muted-foreground)"
+                      fontSize={12}
+                      tickLine={false}
+                      axisLine={false}
+                    />
+                    <YAxis
+                      stroke="var(--color-muted-foreground)"
+                      fontSize={12}
+                      tickLine={false}
+                      axisLine={false}
+                    />
+                    <Tooltip
+                      contentStyle={{
+                        background: "var(--color-card)",
+                        border: "1px solid var(--color-border)",
+                        borderRadius: 12,
+                        fontSize: 12,
+                      }}
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="dives"
+                      stroke="var(--color-primary-glow)"
+                      strokeWidth={2}
+                      fill="url(#areaS)"
+                    />
+                    <Area
+                      type="monotone"
+                      dataKey="tourists"
+                      stroke="var(--color-primary)"
+                      strokeWidth={2.5}
+                      fill="url(#areaP)"
+                    />
+                  </AreaChart>
+                </ResponsiveContainer>
               )}
             </div>
           </SectionCard>
@@ -3419,39 +3513,39 @@ function Overview({ session }: { session?: StaffSession | null }) {
               {isEmptyChartData(scaledNationality) ? (
                 <ChartEmptyState className="h-72" />
               ) : (
-              <ResponsiveContainer>
-                <PieChart>
-                  <Pie
-                    data={scaledNationality}
-                    dataKey="value"
-                    nameKey="name"
-                    innerRadius={55}
-                    outerRadius={90}
-                    paddingAngle={2}
-                    stroke="var(--color-card)"
-                    strokeWidth={2}
-                    onClick={(_, i) =>
-                      setDrillNationality(scaledNationality[i])
-                    }
-                    className="cursor-pointer"
-                  >
-                    {scaledNationality.map((_, i) => (
-                      <Cell
-                        key={i}
-                        fill={CHART_COLORS[i % CHART_COLORS.length]}
-                      />
-                    ))}
-                  </Pie>
-                  <Tooltip
-                    contentStyle={{
-                      background: "var(--color-card)",
-                      border: "1px solid var(--color-border)",
-                      borderRadius: 12,
-                      fontSize: 12,
-                    }}
-                  />
-                </PieChart>
-              </ResponsiveContainer>
+                <ResponsiveContainer>
+                  <PieChart>
+                    <Pie
+                      data={scaledNationality}
+                      dataKey="value"
+                      nameKey="name"
+                      innerRadius={55}
+                      outerRadius={90}
+                      paddingAngle={2}
+                      stroke="var(--color-card)"
+                      strokeWidth={2}
+                      onClick={(_, i) =>
+                        setDrillNationality(scaledNationality[i])
+                      }
+                      className="cursor-pointer"
+                    >
+                      {scaledNationality.map((_, i) => (
+                        <Cell
+                          key={i}
+                          fill={CHART_COLORS[i % CHART_COLORS.length]}
+                        />
+                      ))}
+                    </Pie>
+                    <Tooltip
+                      contentStyle={{
+                        background: "var(--color-card)",
+                        border: "1px solid var(--color-border)",
+                        borderRadius: 12,
+                        fontSize: 12,
+                      }}
+                    />
+                  </PieChart>
+                </ResponsiveContainer>
               )}
             </div>
             <div className="mt-2 grid grid-cols-2 gap-1.5">
@@ -3480,35 +3574,35 @@ function Overview({ session }: { session?: StaffSession | null }) {
               {isEmptyChartData(scaledDiveLevel) ? (
                 <ChartEmptyState className="h-56" />
               ) : (
-              <ResponsiveContainer>
-                <RadialBarChart
-                  innerRadius="30%"
-                  outerRadius="100%"
-                  data={diveLevel}
-                  startAngle={90}
-                  endAngle={-270}
-                >
-                  <RadialBar
-                    dataKey="value"
-                    background
-                    cornerRadius={8}
-                    onClick={(_, i) => setDrillLevel(scaledDiveLevel[i])}
-                    className="cursor-pointer"
+                <ResponsiveContainer>
+                  <RadialBarChart
+                    innerRadius="30%"
+                    outerRadius="100%"
+                    data={diveLevel}
+                    startAngle={90}
+                    endAngle={-270}
                   >
-                    {scaledDiveLevel.map((_, i) => (
-                      <Cell key={i} fill={CHART_COLORS[i]} />
-                    ))}
-                  </RadialBar>
-                  <Tooltip
-                    contentStyle={{
-                      background: "var(--color-card)",
-                      border: "1px solid var(--color-border)",
-                      borderRadius: 12,
-                      fontSize: 12,
-                    }}
-                  />
-                </RadialBarChart>
-              </ResponsiveContainer>
+                    <RadialBar
+                      dataKey="value"
+                      background
+                      cornerRadius={8}
+                      onClick={(_, i) => setDrillLevel(scaledDiveLevel[i])}
+                      className="cursor-pointer"
+                    >
+                      {scaledDiveLevel.map((_, i) => (
+                        <Cell key={i} fill={CHART_COLORS[i]} />
+                      ))}
+                    </RadialBar>
+                    <Tooltip
+                      contentStyle={{
+                        background: "var(--color-card)",
+                        border: "1px solid var(--color-border)",
+                        borderRadius: 12,
+                        fontSize: 12,
+                      }}
+                    />
+                  </RadialBarChart>
+                </ResponsiveContainer>
               )}
             </div>
             <div className="space-y-1.5 mt-1">
@@ -3530,46 +3624,46 @@ function Overview({ session }: { session?: StaffSession | null }) {
               {isEmptyChartData(scaledDiveType) ? (
                 <ChartEmptyState className="h-56" />
               ) : (
-              <ResponsiveContainer>
-                <BarChart
-                  data={scaledDiveType}
-                  margin={{ left: -20, right: 8 }}
-                >
-                  <CartesianGrid
-                    stroke="var(--color-border)"
-                    strokeDasharray="3 6"
-                    vertical={false}
-                  />
-                  <XAxis
-                    dataKey="name"
-                    stroke="var(--color-muted-foreground)"
-                    fontSize={12}
-                    tickLine={false}
-                    axisLine={false}
-                  />
-                  <YAxis
-                    stroke="var(--color-muted-foreground)"
-                    fontSize={12}
-                    tickLine={false}
-                    axisLine={false}
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      background: "var(--color-card)",
-                      border: "1px solid var(--color-border)",
-                      borderRadius: 12,
-                      fontSize: 12,
-                    }}
-                  />
-                  <Bar
-                    dataKey="value"
-                    fill="var(--color-primary)"
-                    radius={[8, 8, 0, 0]}
-                    onClick={(_, i) => setDrillDiveType(scaledDiveType[i])}
-                    className="cursor-pointer"
-                  />
-                </BarChart>
-              </ResponsiveContainer>
+                <ResponsiveContainer>
+                  <BarChart
+                    data={scaledDiveType}
+                    margin={{ left: -20, right: 8 }}
+                  >
+                    <CartesianGrid
+                      stroke="var(--color-border)"
+                      strokeDasharray="3 6"
+                      vertical={false}
+                    />
+                    <XAxis
+                      dataKey="name"
+                      stroke="var(--color-muted-foreground)"
+                      fontSize={12}
+                      tickLine={false}
+                      axisLine={false}
+                    />
+                    <YAxis
+                      stroke="var(--color-muted-foreground)"
+                      fontSize={12}
+                      tickLine={false}
+                      axisLine={false}
+                    />
+                    <Tooltip
+                      contentStyle={{
+                        background: "var(--color-card)",
+                        border: "1px solid var(--color-border)",
+                        borderRadius: 12,
+                        fontSize: 12,
+                      }}
+                    />
+                    <Bar
+                      dataKey="value"
+                      fill="var(--color-primary)"
+                      radius={[8, 8, 0, 0]}
+                      onClick={(_, i) => setDrillDiveType(scaledDiveType[i])}
+                      className="cursor-pointer"
+                    />
+                  </BarChart>
+                </ResponsiveContainer>
               )}
             </div>
           </SectionCard>
@@ -3579,56 +3673,56 @@ function Overview({ session }: { session?: StaffSession | null }) {
               {isEmptyChartData(scaledTopSites) ? (
                 <ChartEmptyState className="h-56" />
               ) : (
-              <ResponsiveContainer>
-                <BarChart
-                  data={scaledTopSites}
-                  layout="vertical"
-                  margin={{ left: 8, right: 8 }}
-                >
-                  <CartesianGrid
-                    stroke="var(--color-border)"
-                    strokeDasharray="3 6"
-                    horizontal={false}
-                  />
-                  <XAxis
-                    type="number"
-                    stroke="var(--color-muted-foreground)"
-                    fontSize={12}
-                    tickLine={false}
-                    axisLine={false}
-                  />
-                  <YAxis
-                    dataKey="name"
-                    type="category"
-                    stroke="var(--color-muted-foreground)"
-                    fontSize={12}
-                    tickLine={false}
-                    axisLine={false}
-                    width={100}
-                  />
-                  <Tooltip
-                    contentStyle={{
-                      background: "var(--color-card)",
-                      border: "1px solid var(--color-border)",
-                      borderRadius: 12,
-                      fontSize: 12,
-                    }}
-                  />
-                  <Bar
-                    dataKey="value"
-                    radius={[0, 8, 8, 0]}
-                    onClick={(_, i) => setDrillSite(scaledTopSites[i])}
-                    className="cursor-pointer"
+                <ResponsiveContainer>
+                  <BarChart
+                    data={scaledTopSites}
+                    layout="vertical"
+                    margin={{ left: 8, right: 8 }}
                   >
-                    {scaledTopSites.map((_, i) => (
-                      <Cell
-                        key={i}
-                        fill={CHART_COLORS[i % CHART_COLORS.length]}
-                      />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
+                    <CartesianGrid
+                      stroke="var(--color-border)"
+                      strokeDasharray="3 6"
+                      horizontal={false}
+                    />
+                    <XAxis
+                      type="number"
+                      stroke="var(--color-muted-foreground)"
+                      fontSize={12}
+                      tickLine={false}
+                      axisLine={false}
+                    />
+                    <YAxis
+                      dataKey="name"
+                      type="category"
+                      stroke="var(--color-muted-foreground)"
+                      fontSize={12}
+                      tickLine={false}
+                      axisLine={false}
+                      width={100}
+                    />
+                    <Tooltip
+                      contentStyle={{
+                        background: "var(--color-card)",
+                        border: "1px solid var(--color-border)",
+                        borderRadius: 12,
+                        fontSize: 12,
+                      }}
+                    />
+                    <Bar
+                      dataKey="value"
+                      radius={[0, 8, 8, 0]}
+                      onClick={(_, i) => setDrillSite(scaledTopSites[i])}
+                      className="cursor-pointer"
+                    >
+                      {scaledTopSites.map((_, i) => (
+                        <Cell
+                          key={i}
+                          fill={CHART_COLORS[i % CHART_COLORS.length]}
+                        />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
               )}
             </div>
           </SectionCard>
@@ -3770,9 +3864,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
                   .slice(0, 5)
                   .map((t: any) => (
                     <TableRow key={t.id}>
-                      <TableCell className="font-medium">
-                        {t.name}
-                      </TableCell>
+                      <TableCell className="font-medium">{t.name}</TableCell>
                       <TableCell>
                         <Badge variant="outline" className="text-[10px]">
                           {t.level ?? "—"}
@@ -3794,9 +3886,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
                 {ovTourists.filter((t: any) => {
                   const nat = t.nationality ?? "";
                   if (drillNationality.name === "Other") {
-                    return !scaledNationality
-                      .map((n) => n.name)
-                      .includes(nat);
+                    return !scaledNationality.map((n) => n.name).includes(nat);
                   }
                   return nat === drillNationality.name;
                 }).length === 0 && (
@@ -3929,8 +4019,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
                 {
                   label: "Est. dives",
                   value: Math.round(
-                    ((ovLive ? liveTotalDivers : 2140) *
-                      drillDiveType.value) /
+                    ((ovLive ? liveTotalDivers : 2140) * drillDiveType.value) /
                       100,
                   ).toLocaleString(),
                   icon: TrendingUp,
@@ -4002,8 +4091,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
                 {
                   label: "Est. divers",
                   value: Math.round(
-                    ((ovLive ? ovTourists.length : 12480) *
-                      drillLevel.value) /
+                    ((ovLive ? ovTourists.length : 12480) * drillLevel.value) /
                       100,
                   ).toLocaleString(),
                   icon: Users,
@@ -4031,9 +4119,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
                   .map((t: any) => (
                     <TableRow key={t.id}>
                       <TableCell className="font-medium">{t.name}</TableCell>
-                      <TableCell>
-                        {t.nationality ?? "—"}
-                      </TableCell>
+                      <TableCell>{t.nationality ?? "—"}</TableCell>
                       <TableCell>
                         {t.status === "Active" ? (
                           <Badge className="bg-success/15 text-success border-success/20 text-[10px]">
@@ -4077,7 +4163,7 @@ function TouristMgmt({ session }: { session?: StaffSession | null }) {
       session?.userId
         ? touristList.filter((t) => (t as any)._dbId !== session.userId)
         : touristList,
-    [touristList, session?.userId]
+    [touristList, session?.userId],
   );
   useEffect(() => {
     if (liveTourists.isError) {
@@ -4901,22 +4987,24 @@ function TouristMgmt({ session }: { session?: StaffSession | null }) {
             ...new Set(
               visibleTourists
                 .map((t) => t.nationality)
-                .filter((n): n is string => !!n)
+                .filter((n): n is string => !!n),
             ),
           ].sort()
         : ALL_NATIONALITIES,
-    [isLiveData, visibleTourists]
+    [isLiveData, visibleTourists],
   );
   const levelOptions = useMemo(
     () =>
       isLiveData
         ? [
             ...new Set(
-              visibleTourists.map((t) => t.level).filter((l): l is string => !!l)
+              visibleTourists
+                .map((t) => t.level)
+                .filter((l): l is string => !!l),
             ),
           ].sort()
         : ALL_LEVELS,
-    [isLiveData, visibleTourists]
+    [isLiveData, visibleTourists],
   );
 
   const {
@@ -4967,11 +5055,11 @@ function TouristMgmt({ session }: { session?: StaffSession | null }) {
         invalidateTourists();
         setViewing({ ...viewing, status: nextStatus });
         pushAuditLog(
-          `${toSuspended ? "Suspended" : "Reactivated"} tourist ${viewing.id}`
+          `${toSuspended ? "Suspended" : "Reactivated"} tourist ${viewing.id}`,
         );
         toast.success(
           toSuspended ? "Tourist suspended" : "Tourist reactivated",
-          { description: `${viewing.name} (${viewing.id})` }
+          { description: `${viewing.name} (${viewing.id})` },
         );
       } catch (e) {
         toast.error("Could not update tourist", {
@@ -4983,13 +5071,11 @@ function TouristMgmt({ session }: { session?: StaffSession | null }) {
       return;
     }
     setMockTourists((prev) =>
-      prev.map((t) =>
-        t.id === viewing.id ? { ...t, status: nextStatus } : t
-      )
+      prev.map((t) => (t.id === viewing.id ? { ...t, status: nextStatus } : t)),
     );
     setViewing({ ...viewing, status: nextStatus });
     pushAuditLog(
-      `${toSuspended ? "Suspended" : "Reactivated"} tourist ${viewing.id}`
+      `${toSuspended ? "Suspended" : "Reactivated"} tourist ${viewing.id}`,
     );
     toast.success(toSuspended ? "Tourist suspended" : "Tourist reactivated", {
       description: `${viewing.name} (${viewing.id})`,
@@ -5014,7 +5100,9 @@ function TouristMgmt({ session }: { session?: StaffSession | null }) {
         const renewalDate = await renewTourist(dbId);
         invalidateTourists();
         setViewing({ ...viewing, expires: renewalDate, status: "Active" });
-        pushAuditLog(`Renewed tourist ${viewing.id} — extends to ${renewalDate}`);
+        pushAuditLog(
+          `Renewed tourist ${viewing.id} — extends to ${renewalDate}`,
+        );
         toast.success("Tourist ID renewed", {
           description: `${viewing.name} (${viewing.id}) — valid to ${renewalDate}`,
         });
@@ -5034,8 +5122,8 @@ function TouristMgmt({ session }: { session?: StaffSession | null }) {
       prev.map((t) =>
         t.id === viewing.id
           ? { ...t, expires: renewalDate, status: "Active" }
-          : t
-      )
+          : t,
+      ),
     );
     setViewing({ ...viewing, expires: renewalDate, status: "Active" });
     pushAuditLog(`Renewed tourist ${viewing.id} — extends to ${renewalDate}`);
@@ -5169,9 +5257,7 @@ function TouristMgmt({ session }: { session?: StaffSession | null }) {
                     {t.id}
                   </TableCell>
                   <TableCell className="font-medium">{t.name}</TableCell>
-                  <TableCell>
-                    {t.nationality ?? "—"}
-                  </TableCell>
+                  <TableCell>{t.nationality ?? "—"}</TableCell>
                   <TableCell>{t.level ?? "—"}</TableCell>
                   <TableCell className="text-muted-foreground">
                     {t.registered}
@@ -5234,10 +5320,7 @@ function TouristMgmt({ session }: { session?: StaffSession | null }) {
                 <StatusBadge status={viewing.status} />
               </div>
               <div className="grid grid-cols-2 gap-3 text-sm">
-                <Field
-                  label="Nationality"
-                  value={viewing.nationality ?? "—"}
-                />
+                <Field label="Nationality" value={viewing.nationality ?? "—"} />
                 <Field label="Dive Level" value={viewing.level ?? "—"} />
                 <Field label="Registered" value={viewing.registered} />
                 <Field label="ID Expires" value={viewing.expires} />
@@ -5367,7 +5450,6 @@ function TouristMgmt({ session }: { session?: StaffSession | null }) {
           </Card>
         )}
       </DrilldownDialog>
-
     </div>
   );
 }
@@ -5435,7 +5517,7 @@ export function OperatorMgmt({
   // keep "needs review" unambiguous. Rejected rows stay for the record/reopen.
   const queueApps = useMemo(
     () => filteredApps.filter((a) => a.status !== "Approved"),
-    [filteredApps]
+    [filteredApps],
   );
 
   const {
@@ -5476,7 +5558,7 @@ export function OperatorMgmt({
     outcomes.forEach((o, i) => {
       if (o.status === "fulfilled") {
         pushAuditLog(
-          `Registered establishment for ${rows[i].id} (${rows[i].name})`
+          `Registered establishment for ${rows[i].id} (${rows[i].name})`,
         );
         if (!quiet) {
           toast.success("Establishment registered", {
@@ -5485,7 +5567,7 @@ export function OperatorMgmt({
         }
       } else {
         pushAuditLog(
-          `Establishment creation failed for ${rows[i].id} — ${dbErrorMessage((o as PromiseRejectedResult).reason)}`
+          `Establishment creation failed for ${rows[i].id} — ${dbErrorMessage((o as PromiseRejectedResult).reason)}`,
         );
       }
     });
@@ -5520,7 +5602,7 @@ export function OperatorMgmt({
         await decideApplication(
           liveRow._dbId,
           decision === "Approved" ? "approved" : "rejected",
-          reason
+          reason,
         );
         invalidateLive();
         const t = decision === "Approved" ? toast.success : toast.error;
@@ -5530,7 +5612,7 @@ export function OperatorMgmt({
         pushAuditLog(
           decision === "Approved"
             ? `Approved operator ${id}`
-            : `Rejected operator ${id} — ${reason}`
+            : `Rejected operator ${id} — ${reason}`,
         );
         if (decision === "Approved") {
           void runGraduations([liveRow], false);
@@ -5624,7 +5706,7 @@ export function OperatorMgmt({
     // Live mode: persist each decision, then refetch once. Per-row results
     // via allSettled — a single row failure must not report the batch as fully saved.
     let succeeded: string[] = [];
-    let failed: { id: string; message: string }[] = [];
+    const failed: { id: string; message: string }[] = [];
     if (isLive && liveApps.data) {
       if (!(await requireLiveSession())) {
         setBusy((b) => {
@@ -5641,13 +5723,14 @@ export function OperatorMgmt({
       const results = await Promise.allSettled(
         ids.map((id) => {
           const dbId = byId.get(id);
-          if (!dbId) return Promise.reject(new Error(`No live record for ${id}`));
+          if (!dbId)
+            return Promise.reject(new Error(`No live record for ${id}`));
           return decideApplication(
             dbId,
             decision === "Approved" ? "approved" : "rejected",
-            reason
+            reason,
           );
-        })
+        }),
       );
       results.forEach((res, i) => {
         if (res.status === "fulfilled") succeeded.push(ids[i]);
@@ -5710,7 +5793,9 @@ export function OperatorMgmt({
       );
     }
     if (decision === "Rejected") {
-      succeeded.forEach((id) => pushAuditLog(`Rejected operator ${id} — ${reason}`));
+      succeeded.forEach((id) =>
+        pushAuditLog(`Rejected operator ${id} — ${reason}`),
+      );
     } else {
       succeeded.forEach((id) => pushAuditLog(`Approved operator ${id}`));
       if (isLive && liveApps.data) {
@@ -5940,14 +6025,19 @@ export function OperatorMgmt({
                                 size="sm"
                                 variant="ghost"
                                 onClick={async () => {
-                                  const liveRow = liveApps.data?.find((a) => a.id === o.id);
+                                  const liveRow = liveApps.data?.find(
+                                    (a) => a.id === o.id,
+                                  );
                                   if (isLive && liveRow) {
                                     if (!(await requireLiveSession())) return;
                                     try {
                                       // Reopen writes the same lowercase status convention as
                                       // approve/reject ("pending" → "Pending" via cap() on refetch).
                                       // Requires operator_applications.status to accept 'pending' (030).
-                                      await decideApplication(liveRow._dbId, "pending");
+                                      await decideApplication(
+                                        liveRow._dbId,
+                                        "pending",
+                                      );
                                       invalidateLive();
                                       toast.info("Marked as pending again", {
                                         description: o.id,
@@ -6279,7 +6369,7 @@ export function ReceiptVerification() {
         await decideReceipt(
           liveRow._dbId,
           decision === "Verified" ? "verified" : "rejected",
-          reason
+          reason,
         );
         invalidateLiveReceipts();
         const t = decision === "Verified" ? toast.success : toast.error;
@@ -6295,7 +6385,7 @@ export function ReceiptVerification() {
         pushAuditLog(
           decision === "Verified"
             ? `Verified receipt ${id}`
-            : `Rejected receipt ${id} — ${reason}`
+            : `Rejected receipt ${id} — ${reason}`,
         );
       } catch (e) {
         toast.error("Could not save decision", {
@@ -6377,7 +6467,7 @@ export function ReceiptVerification() {
     // Live mode: persist each decision, then refetch once. Per-row results
     // via allSettled — a single row failure must not report the batch as fully saved.
     let succeeded: string[] = [];
-    let failed: { id: string; message: string }[] = [];
+    const failed: { id: string; message: string }[] = [];
     if (isLive && liveReceipts.data) {
       if (!(await requireLiveSession())) {
         setBusy((b) => {
@@ -6394,13 +6484,14 @@ export function ReceiptVerification() {
       const results = await Promise.allSettled(
         ids.map((id) => {
           const dbId = byId.get(id);
-          if (!dbId) return Promise.reject(new Error(`No live record for ${id}`));
+          if (!dbId)
+            return Promise.reject(new Error(`No live record for ${id}`));
           return decideReceipt(
             dbId,
             decision === "Approved" ? "verified" : "rejected",
-            reason
+            reason,
           );
-        })
+        }),
       );
       results.forEach((res, i) => {
         if (res.status === "fulfilled") succeeded.push(ids[i]);
@@ -6464,7 +6555,9 @@ export function ReceiptVerification() {
       );
     }
     if (decision === "Rejected") {
-      succeeded.forEach((id) => pushAuditLog(`Rejected receipt ${id} — ${reason}`));
+      succeeded.forEach((id) =>
+        pushAuditLog(`Rejected receipt ${id} — ${reason}`),
+      );
     } else {
       succeeded.forEach((id) => pushAuditLog(`Verified receipt ${id}`));
     }
@@ -6971,10 +7064,8 @@ export function ManifestoView() {
           if (!monthSet.has(key)) return false;
         }
       }
-      if (verificationFilter === "verified" && !isVerified(m))
-        return false;
-      if (verificationFilter === "unverified" && isVerified(m))
-        return false;
+      if (verificationFilter === "verified" && !isVerified(m)) return false;
+      if (verificationFilter === "unverified" && isVerified(m)) return false;
       return true;
     });
   }, [
@@ -6996,7 +7087,7 @@ export function ManifestoView() {
       isLiveData
         ? [...new Set(items.map((m) => m.site).filter(Boolean))].sort()
         : ALL_SITES,
-    [isLiveData, items]
+    [isLiveData, items],
   );
 
   const {
@@ -7510,7 +7601,10 @@ export function ManifestoView() {
                               </span>
                             )}
                             {d.isWalkIn && (
-                              <Badge variant="secondary" className="text-[10px]">
+                              <Badge
+                                variant="secondary"
+                                className="text-[10px]"
+                              >
                                 Walk-in
                               </Badge>
                             )}
@@ -7684,9 +7778,7 @@ const toSiteView = (s: any) => {
   // Multi-type lives in `siteTypes` (live) or `types` (mock); legacy rows and
   // old mock entries only carry a single `type`.
   const types: string[] =
-    s.siteTypes ??
-    s.types ??
-    (s.type && s.type !== "—" ? [s.type] : []);
+    s.siteTypes ?? s.types ?? (s.type && s.type !== "—" ? [s.type] : []);
   return {
     _dbId: s._dbId,
     id: s.siteCode ?? s.id ?? "—",
@@ -7775,7 +7867,7 @@ export function DiveSiteMgmt() {
   const isLiveData = isLive && !!liveSites.data;
   const sites = useMemo(
     () => (liveSites.data ?? mockSites).map(toSiteView),
-    [liveSites.data, mockSites]
+    [liveSites.data, mockSites],
   );
   useEffect(() => {
     if (liveSites.isError) {
@@ -7827,20 +7919,20 @@ export function DiveSiteMgmt() {
   const difficultyOptions = useMemo(
     () =>
       isLiveData
-        ? [...new Set(sites.map((s) => s.difficulty).filter((d) => d !== "—"))].sort()
+        ? [
+            ...new Set(sites.map((s) => s.difficulty).filter((d) => d !== "—")),
+          ].sort()
         : ALL_DIFFICULTIES,
-    [isLiveData, sites]
+    [isLiveData, sites],
   );
   const siteTypeOptions = useMemo(
     () =>
       isLiveData
         ? [
-            ...new Set(
-              sites.flatMap((s) => s.types).filter((t) => t !== "—"),
-            ),
+            ...new Set(sites.flatMap((s) => s.types).filter((t) => t !== "—")),
           ].sort()
         : ALL_SITE_TYPES,
-    [isLiveData, sites]
+    [isLiveData, sites],
   );
 
   const activeFilters: { key: string; label: string }[] = [];
@@ -7990,7 +8082,10 @@ export function DiveSiteMgmt() {
       name: site.name ?? "",
       barangay: site.barangay && site.barangay !== "—" ? site.barangay : "",
       depth: site.depth && site.depth !== "—" ? site.depth : "",
-      difficulty: site.difficulty && site.difficulty !== "—" ? site.difficulty : "Open Water",
+      difficulty:
+        site.difficulty && site.difficulty !== "—"
+          ? site.difficulty
+          : "Open Water",
       types: site.types?.length
         ? site.types
         : site.type && site.type !== "—"
@@ -8063,14 +8158,16 @@ export function DiveSiteMgmt() {
       }
       return;
     }
-    const photo = photoFile ? newSite.photo : clearPhoto ? "" : editTarget.photo;
+    const photo = photoFile
+      ? newSite.photo
+      : clearPhoto
+        ? ""
+        : editTarget.photo;
     setMockSites((prev) =>
-      prev.map((s) =>
-        s.id === editTarget.id ? { ...s, ...base, photo } : s
-      )
+      prev.map((s) => (s.id === editTarget.id ? { ...s, ...base, photo } : s)),
     );
     setViewing((v: any) =>
-      v && v.id === editTarget.id ? { ...v, ...base, photo } : v
+      v && v.id === editTarget.id ? { ...v, ...base, photo } : v,
     );
     closeSiteDialog();
     pushAuditLog(`Edited dive site ${editTarget.id} — ${base.name}`);
@@ -8125,7 +8222,7 @@ export function DiveSiteMgmt() {
       }
       setViewing((v: any) => (v && v.id === deleteTarget.id ? null : v));
       pushAuditLog(
-        `Deleted dive site ${deleteTarget.id} — ${deleteTarget.name}`
+        `Deleted dive site ${deleteTarget.id} — ${deleteTarget.name}`,
       );
       toast.success("Dive site deleted", {
         description: deleteTarget.name,
@@ -8154,7 +8251,9 @@ export function DiveSiteMgmt() {
     reader.readAsDataURL(file);
   };
 
-  const nextStatusOf = (status: string): "Active" | "Seasonal" | "Restricted" =>
+  const nextStatusOf = (
+    status: string,
+  ): "Active" | "Seasonal" | "Restricted" =>
     status === "Active"
       ? "Restricted"
       : status === "Restricted"
@@ -8209,54 +8308,54 @@ export function DiveSiteMgmt() {
         const next = nextStatusOf(s.status);
         toast.info(`Status updated`, { description: `${s.name} → ${next}` });
         return { ...s, status: next };
-      })
+      }),
     );
   };
 
   return (
     <>
       <div className="space-y-4">
-          {/* Search & Filters */}
-          <div className="flex flex-col gap-3">
-            <div className="flex items-center gap-2">
-              <DataSourceBadge
-                live={isLiveData}
-                isError={liveSites.isError}
-                isLoading={liveSites.isFetching}
+        {/* Search & Filters */}
+        <div className="flex flex-col gap-3">
+          <div className="flex items-center gap-2">
+            <DataSourceBadge
+              live={isLiveData}
+              isError={liveSites.isError}
+              isLoading={liveSites.isFetching}
+            />
+          </div>
+          <div className="flex flex-col md:flex-row gap-3 md:items-center">
+            <div className="relative flex-1 max-w-md">
+              <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                placeholder="Search by name, ID, or barangay…"
+                value={search.q}
+                onChange={(e) => setFilters({ q: e.target.value })}
+                className="pl-9"
               />
             </div>
-            <div className="flex flex-col md:flex-row gap-3 md:items-center">
-              <div className="relative flex-1 max-w-md">
-                <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  placeholder="Search by name, ID, or barangay…"
-                  value={search.q}
-                  onChange={(e) => setFilters({ q: e.target.value })}
-                  className="pl-9"
-                />
-              </div>
-              <Select
-                value={search.status}
-                onValueChange={(v) => setFilters({ status: v })}
-              >
-                <SelectTrigger className="w-36">
-                  <SelectValue placeholder="Status" />
-                </SelectTrigger>
-                <SelectContent>
-                  {["All", "Active", "Seasonal", "Restricted"].map((s) => (
-                    <SelectItem key={s} value={s}>
-                      {s}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Select
-                value={search.difficulty}
-                onValueChange={(v) => setFilters({ difficulty: v })}
-              >
-                <SelectTrigger className="w-40">
-                  <SelectValue placeholder="Difficulty" />
-                </SelectTrigger>
+            <Select
+              value={search.status}
+              onValueChange={(v) => setFilters({ status: v })}
+            >
+              <SelectTrigger className="w-36">
+                <SelectValue placeholder="Status" />
+              </SelectTrigger>
+              <SelectContent>
+                {["All", "Active", "Seasonal", "Restricted"].map((s) => (
+                  <SelectItem key={s} value={s}>
+                    {s}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <Select
+              value={search.difficulty}
+              onValueChange={(v) => setFilters({ difficulty: v })}
+            >
+              <SelectTrigger className="w-40">
+                <SelectValue placeholder="Difficulty" />
+              </SelectTrigger>
               <SelectContent>
                 <SelectItem value="All">All difficulties</SelectItem>
                 {difficultyOptions.map((d) => (
@@ -8265,14 +8364,14 @@ export function DiveSiteMgmt() {
                   </SelectItem>
                 ))}
               </SelectContent>
-              </Select>
-              <Select
-                value={search.siteType}
-                onValueChange={(v) => setFilters({ siteType: v })}
-              >
-                <SelectTrigger className="w-36">
-                  <SelectValue placeholder="Type" />
-                </SelectTrigger>
+            </Select>
+            <Select
+              value={search.siteType}
+              onValueChange={(v) => setFilters({ siteType: v })}
+            >
+              <SelectTrigger className="w-36">
+                <SelectValue placeholder="Type" />
+              </SelectTrigger>
               <SelectContent>
                 <SelectItem value="All">All types</SelectItem>
                 {siteTypeOptions.map((t) => (
@@ -8281,686 +8380,684 @@ export function DiveSiteMgmt() {
                   </SelectItem>
                 ))}
               </SelectContent>
-              </Select>
-              {activeFilters.length > 0 && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={() =>
-                    setFilters({
-                      q: "",
-                      status: "All",
-                      difficulty: "All",
-                      siteType: "All",
-                    })
-                  }
-                  className="text-muted-foreground"
-                >
-                  <X className="size-3.5 mr-1" /> Clear
-                </Button>
-              )}
+            </Select>
+            {activeFilters.length > 0 && (
               <Button
-                className="ml-auto gradient-primary text-primary-foreground"
-                onClick={() => {
-                  if (!canAct) return deny();
-                  resetSiteForm();
-                  setPhotoFile(null);
-                  setClearPhoto(false);
-                  setSiteErrors({});
-                  setEditTarget(null);
-                  setAddOpen(true);
-                }}
+                variant="ghost"
+                size="sm"
+                onClick={() =>
+                  setFilters({
+                    q: "",
+                    status: "All",
+                    difficulty: "All",
+                    siteType: "All",
+                  })
+                }
+                className="text-muted-foreground"
               >
-                <Plus className="size-4 mr-1.5" /> Add Site
+                <X className="size-3.5 mr-1" /> Clear
               </Button>
-            </div>
-            <ActiveFilterBadges
-              filters={activeFilters}
-              onRemove={handleRemoveFilter}
-            />
+            )}
+            <Button
+              className="ml-auto gradient-primary text-primary-foreground"
+              onClick={() => {
+                if (!canAct) return deny();
+                resetSiteForm();
+                setPhotoFile(null);
+                setClearPhoto(false);
+                setSiteErrors({});
+                setEditTarget(null);
+                setAddOpen(true);
+              }}
+            >
+              <Plus className="size-4 mr-1.5" /> Add Site
+            </Button>
           </div>
+          <ActiveFilterBadges
+            filters={activeFilters}
+            onRemove={handleRemoveFilter}
+          />
+        </div>
 
-          <div className="text-xs text-muted-foreground">
-            {filtered.length} of {sites.length} dive site
-            {sites.length !== 1 ? "s" : ""}
-          </div>
+        <div className="text-xs text-muted-foreground">
+          {filtered.length} of {sites.length} dive site
+          {sites.length !== 1 ? "s" : ""}
+        </div>
 
-          <Card className="shadow-elegant overflow-hidden">
-            <Table>
-              <TableHeader>
-                <TableRow className="bg-secondary/50">
-                  <TableHead className="w-12"></TableHead>
-                  <TableHead>Site ID</TableHead>
-                  <TableHead>Name</TableHead>
-                  <TableHead>Barangay</TableHead>
-                  <TableHead>Depth</TableHead>
-                  <TableHead>Difficulty</TableHead>
-                  <TableHead>Type</TableHead>
-                  <TableHead>Total Dives</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
+        <Card className="shadow-elegant overflow-hidden">
+          <Table>
+            <TableHeader>
+              <TableRow className="bg-secondary/50">
+                <TableHead className="w-12"></TableHead>
+                <TableHead>Site ID</TableHead>
+                <TableHead>Name</TableHead>
+                <TableHead>Barangay</TableHead>
+                <TableHead>Depth</TableHead>
+                <TableHead>Difficulty</TableHead>
+                <TableHead>Type</TableHead>
+                <TableHead>Total Dives</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filtered.length === 0 ? (
+                <TableRow>
+                  <TableCell
+                    colSpan={10}
+                    className="text-center py-8 text-muted-foreground"
+                  >
+                    No dive sites match the current filters.
+                  </TableCell>
                 </TableRow>
-              </TableHeader>
-              <TableBody>
-                {filtered.length === 0 ? (
-                  <TableRow>
-                    <TableCell
-                      colSpan={10}
-                      className="text-center py-8 text-muted-foreground"
-                    >
-                      No dive sites match the current filters.
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  filtered.map((s) => (
-                    <TableRow key={s.id} className="hover:bg-primary-soft/40">
-                      <TableCell>
-                        {s.photo || s.photoPath ? (
-                          <SitePhoto
-                            photo={s.photo}
-                            photoPath={s.photoPath}
-                            alt={s.name}
-                            className="size-9 rounded-lg object-cover"
-                          />
-                        ) : (
-                          <div className="size-9 rounded-lg bg-gradient-to-br from-primary-soft to-secondary flex items-center justify-center">
-                            <MapPin className="size-4 text-primary/50" />
-                          </div>
-                        )}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs text-muted-foreground">
-                        {s.id}
-                      </TableCell>
-                      <TableCell className="font-medium">{s.name}</TableCell>
-                      <TableCell>{s.barangay}</TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {s.depth}
-                      </TableCell>
-                      <TableCell>
-                        <Badge
-                          variant="outline"
-                          className={
-                            s.difficulty === "Open Water"
-                              ? "border-success/30 text-success"
-                              : s.difficulty === "Advanced"
-                                ? "border-primary/30 text-primary"
-                                : s.difficulty === "Rescue"
-                                  ? "border-warning/30 text-warning-foreground"
-                                  : "border-destructive/30 text-destructive"
-                          }
-                        >
-                          {s.difficulty}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        {s.types.length ? s.types.join(", ") : "—"}
-                      </TableCell>
-                      <TableCell>{s.dives}</TableCell>
-                      <TableCell>
-                        <Badge
-                          variant="outline"
-                          className={
-                            s.status === "Active"
-                              ? "bg-success/10 text-success border-success/20"
-                              : s.status === "Seasonal"
-                                ? "bg-warning/15 text-warning-foreground border-warning/30"
-                                : "bg-muted text-muted-foreground border-border"
-                          }
-                        >
-                          {s.status}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="text-right space-x-1">
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => setViewing(s)}
-                        >
-                          <Eye className="size-4" />
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          disabled={!!toggling[s.id]}
-                          onClick={() => toggleStatus(s.id)}
-                          title="Cycle status"
-                        >
-                          {toggling[s.id] ? (
-                            <Loader2 className="size-4 animate-spin" />
-                          ) : (
-                            <RotateCcw className="size-4" />
-                          )}
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
-            </Table>
-          </Card>
-
-          <SectionCard title="Dive Site Heatmap — Mabini, Batangas">
-            <ClientOnlyDiveSiteHeatmap
-              sites={filtered}
-              onSiteClick={(s) =>
-                setViewing(sites.find((f) => f.name === s.name) ?? s)
-              }
-            />
-          </SectionCard>
-
-          {/* Detail Dialog */}
-          <Dialog open={!!viewing} onOpenChange={(o) => !o && setViewing(null)}>
-            <DialogContent className="w-[min(92vw,36rem)] max-w-none max-h-[90dvh] overflow-y-auto overflow-x-hidden">
-              <DialogHeader>
-                <DialogTitle>Dive Site Details</DialogTitle>
-              </DialogHeader>
-              {viewing && (
-                <div className="space-y-5">
-                  {viewing.photo || viewing.photoPath ? (
-                    <div className="w-full aspect-video max-h-[30dvh] rounded-xl overflow-hidden bg-secondary">
-                      <SitePhoto
-                        photo={viewing.photo}
-                        photoPath={viewing.photoPath}
-                        alt={viewing.name}
-                        className="w-full h-full object-cover"
-                      />
-                    </div>
-                  ) : (
-                    <div className="w-full aspect-video max-h-[30dvh] rounded-xl gradient-primary relative overflow-hidden flex items-center justify-center">
-                      <div
-                        className="absolute inset-0 opacity-25"
-                        style={{
-                          backgroundImage:
-                            "radial-gradient(circle at 30% 30%, oklch(1 0 0 / 0.6), transparent 50%)",
-                        }}
-                      />
-                      <MapPin className="size-16 text-primary-foreground/40" />
-                    </div>
-                  )}
-                  <div className="flex flex-wrap items-center gap-4">
-                    <div className="size-14 rounded-xl gradient-primary flex items-center justify-center text-primary-foreground shrink-0">
-                      <MapPin className="size-7" />
-                    </div>
-                    <div className="min-w-0 flex-1">
-                      <div className="font-display text-lg font-semibold truncate">
-                        {viewing.name}
-                      </div>
-                      <div className="text-xs text-muted-foreground font-mono truncate">
-                        {viewing.id}
-                      </div>
-                    </div>
-                    <Badge
-                      variant="outline"
-                      className={`shrink-0 ${
-                        viewing.status === "Active"
-                          ? "bg-success/10 text-success border-success/20"
-                          : viewing.status === "Seasonal"
-                            ? "bg-warning/15 text-warning-foreground border-warning/30"
-                            : "bg-muted text-muted-foreground border-border"
-                      }`}
-                    >
-                      {viewing.status}
-                    </Badge>
-                  </div>
-                  <p className="text-sm leading-relaxed text-muted-foreground break-words">
-                    {viewing.description}
-                  </p>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3 text-sm">
-                    <Field label="Barangay" value={viewing.barangay} />
-                    <Field label="Depth Range" value={viewing.depth} />
-                    <Field label="Difficulty" value={viewing.difficulty} />
-                    <Field
-                      label="Type"
-                      value={
-                        viewing.types?.length
-                          ? viewing.types.join(", ")
-                          : viewing.type
-                      }
-                    />
-                    <Field label="Total Dives" value={String(viewing.dives)} />
-                    <Field
-                      label="Trend"
-                      value={
-                        siteTrend(viewing.name) ??
-                        `+${5 + Math.floor(Math.random() * 10)}%`
-                      }
-                    />
-                  </div>
-                  <div className="flex flex-col sm:flex-row gap-2 pt-2">
-                    <Button
-                      variant="outline"
-                      className="w-full sm:flex-1"
-                      onClick={() => {
-                        setViewing(null);
-                        openEdit(viewing);
-                      }}
-                    >
-                      <Edit3 className="size-4 mr-1.5" /> Edit
-                    </Button>
-                    <Button
-                      variant="outline"
-                      className="w-full sm:flex-1"
-                      disabled={!!toggling[viewing.id]}
-                      onClick={() => {
-                        setViewing(null);
-                        toggleStatus(viewing.id);
-                      }}
-                    >
-                      {toggling[viewing.id] ? (
-                        <Loader2 className="size-4 mr-1.5 animate-spin" />
-                      ) : null}
-                      Toggle Status
-                    </Button>
-                    {canAdmin && (
-                      <Button
-                        variant="outline"
-                        className="w-full sm:flex-1 border-destructive/30 text-destructive hover:bg-destructive/10"
-                        onClick={() => {
-                          setViewing(null);
-                          attemptDelete(viewing);
-                        }}
-                      >
-                        <Trash2 className="size-4 mr-1.5" /> Delete
-                      </Button>
-                    )}
-                  </div>
-                </div>
-              )}
-            </DialogContent>
-          </Dialog>
-
-          {/* Add / Edit Site Dialog (shared fields, prefilled in edit mode) */}
-          <Dialog
-            open={addOpen || !!editTarget}
-            onOpenChange={(o) => {
-              if (!o) closeSiteDialog();
-              else setAddOpen(true);
-            }}
-          >
-            <DialogContent className="w-[min(92vw,36rem)] max-w-none max-h-[90dvh] overflow-y-auto overflow-x-hidden">
-              <DialogHeader>
-                <DialogTitle>
-                  {editTarget ? "Edit Dive Site" : "Add Dive Site"}
-                </DialogTitle>
-                <p className="text-sm text-muted-foreground">
-                  {editTarget
-                    ? `Update details for ${editTarget.name} (${editTarget.id}).`
-                    : "Register a new dive site with its location and details."}
-                </p>
-              </DialogHeader>
-              <div className="space-y-5">
-                <input
-                  ref={fileRef}
-                  type="file"
-                  accept="image/*"
-                  className="hidden"
-                  onChange={onPhotoPick}
-                />
-                <div
-                  className="relative rounded-xl border-2 border-dashed border-border hover:border-primary/50 transition-colors cursor-pointer overflow-hidden group max-h-[28dvh]"
-                  onClick={() => fileRef.current?.click()}
-                >
-                  {newSite.photo ? (
-                    <>
-                      <img
-                        src={newSite.photo}
-                        alt="Site photo"
-                        className="w-full aspect-video max-h-[28dvh] object-cover"
-                      />
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setNewSite((s) => ({ ...s, photo: "" }));
-                          setPhotoFile(null);
-                          if (fileRef.current) fileRef.current.value = "";
-                        }}
-                        className="absolute top-2 right-2 size-7 rounded-full bg-background/80 backdrop-blur-sm flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
-                      >
-                        <X className="size-4" />
-                      </button>
-                      <div className="absolute inset-0 bg-background/60 backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
-                        <span className="text-sm font-medium text-foreground bg-background/80 rounded-lg px-3 py-1.5">
-                          Change photo
-                        </span>
-                      </div>
-                    </>
-                  ) : (
-                    <div className="w-full aspect-video max-h-[28dvh] flex flex-col items-center justify-center gap-1.5 text-muted-foreground">
-                      <ImageIcon className="size-8" />
-                      <span className="text-sm font-medium">
-                        Click to upload a photo
-                      </span>
-                      <span className="text-xs">JPG, PNG up to 5 MB</span>
-                    </div>
-                  )}
-                </div>
-                {editTarget &&
-                  !newSite.photo &&
-                  !clearPhoto &&
-                  (editTarget.photo || editTarget.photoPath) && (
-                    <div className="flex items-center gap-3 rounded-xl border border-border/60 bg-secondary/40 px-3 py-2 min-w-0">
-                      <SitePhoto
-                        photo={editTarget.photo}
-                        photoPath={editTarget.photoPath}
-                        alt={editTarget.name}
-                        className="size-10 rounded-lg object-cover shrink-0"
-                      />
-                      <div className="flex-1 min-w-0">
-                        <div className="text-xs font-medium truncate">Current photo</div>
-                        <div className="text-[11px] text-muted-foreground truncate">
-                          Upload above to replace
+              ) : (
+                filtered.map((s) => (
+                  <TableRow key={s.id} className="hover:bg-primary-soft/40">
+                    <TableCell>
+                      {s.photo || s.photoPath ? (
+                        <SitePhoto
+                          photo={s.photo}
+                          photoPath={s.photoPath}
+                          alt={s.name}
+                          className="size-9 rounded-lg object-cover"
+                        />
+                      ) : (
+                        <div className="size-9 rounded-lg bg-gradient-to-br from-primary-soft to-secondary flex items-center justify-center">
+                          <MapPin className="size-4 text-primary/50" />
                         </div>
-                      </div>
+                      )}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs text-muted-foreground">
+                      {s.id}
+                    </TableCell>
+                    <TableCell className="font-medium">{s.name}</TableCell>
+                    <TableCell>{s.barangay}</TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {s.depth}
+                    </TableCell>
+                    <TableCell>
+                      <Badge
+                        variant="outline"
+                        className={
+                          s.difficulty === "Open Water"
+                            ? "border-success/30 text-success"
+                            : s.difficulty === "Advanced"
+                              ? "border-primary/30 text-primary"
+                              : s.difficulty === "Rescue"
+                                ? "border-warning/30 text-warning-foreground"
+                                : "border-destructive/30 text-destructive"
+                        }
+                      >
+                        {s.difficulty}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      {s.types.length ? s.types.join(", ") : "—"}
+                    </TableCell>
+                    <TableCell>{s.dives}</TableCell>
+                    <TableCell>
+                      <Badge
+                        variant="outline"
+                        className={
+                          s.status === "Active"
+                            ? "bg-success/10 text-success border-success/20"
+                            : s.status === "Seasonal"
+                              ? "bg-warning/15 text-warning-foreground border-warning/30"
+                              : "bg-muted text-muted-foreground border-border"
+                        }
+                      >
+                        {s.status}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-right space-x-1">
                       <Button
-                        type="button"
                         size="sm"
                         variant="ghost"
-                        className="text-destructive shrink-0"
-                        onClick={() => setClearPhoto(true)}
+                        onClick={() => setViewing(s)}
                       >
-                        <X className="size-4 mr-1" /> Remove
+                        <Eye className="size-4" />
                       </Button>
-                    </div>
-                  )}
-                {clearPhoto && (
-                  <p className="text-xs text-muted-foreground">
-                    Current photo will be removed on save. Upload a new one to
-                    replace it instead.
-                  </p>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        disabled={!!toggling[s.id]}
+                        onClick={() => toggleStatus(s.id)}
+                        title="Cycle status"
+                      >
+                        {toggling[s.id] ? (
+                          <Loader2 className="size-4 animate-spin" />
+                        ) : (
+                          <RotateCcw className="size-4" />
+                        )}
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </Card>
+
+        <SectionCard title="Dive Site Heatmap — Mabini, Batangas">
+          <ClientOnlyDiveSiteHeatmap
+            sites={filtered}
+            onSiteClick={(s) =>
+              setViewing(sites.find((f) => f.name === s.name) ?? s)
+            }
+          />
+        </SectionCard>
+
+        {/* Detail Dialog */}
+        <Dialog open={!!viewing} onOpenChange={(o) => !o && setViewing(null)}>
+          <DialogContent className="w-[min(92vw,36rem)] max-w-none max-h-[90dvh] overflow-y-auto overflow-x-hidden">
+            <DialogHeader>
+              <DialogTitle>Dive Site Details</DialogTitle>
+            </DialogHeader>
+            {viewing && (
+              <div className="space-y-5">
+                {viewing.photo || viewing.photoPath ? (
+                  <div className="w-full aspect-video max-h-[30dvh] rounded-xl overflow-hidden bg-secondary">
+                    <SitePhoto
+                      photo={viewing.photo}
+                      photoPath={viewing.photoPath}
+                      alt={viewing.name}
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
+                ) : (
+                  <div className="w-full aspect-video max-h-[30dvh] rounded-xl gradient-primary relative overflow-hidden flex items-center justify-center">
+                    <div
+                      className="absolute inset-0 opacity-25"
+                      style={{
+                        backgroundImage:
+                          "radial-gradient(circle at 30% 30%, oklch(1 0 0 / 0.6), transparent 50%)",
+                      }}
+                    />
+                    <MapPin className="size-16 text-primary-foreground/40" />
+                  </div>
                 )}
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
-                  <div className="space-y-1.5">
-                    <Label>
-                      Site Name <span className="text-destructive">*</span>
-                    </Label>
-                    <Input
-                      value={newSite.name}
-                      onChange={(e) =>
-                        setNewSite({ ...newSite, name: e.target.value })
-                      }
-                      placeholder="e.g. Cathedral Point"
-                      className={
-                        siteErrors.name
-                          ? "border-destructive focus-visible:ring-destructive/30"
-                          : ""
-                      }
-                    />
-                    {siteErrors.name && (
-                      <p className="text-xs text-destructive flex items-center gap-1">
-                        <AlertCircle className="size-3" />
-                        {siteErrors.name}
-                      </p>
-                    )}
+                <div className="flex flex-wrap items-center gap-4">
+                  <div className="size-14 rounded-xl gradient-primary flex items-center justify-center text-primary-foreground shrink-0">
+                    <MapPin className="size-7" />
                   </div>
-                  <div className="space-y-1.5">
-                    <Label>
-                      Barangay <span className="text-destructive">*</span>
-                    </Label>
-                    <Select
-                      value={newSite.barangay}
-                      onValueChange={(v) =>
-                        setNewSite({ ...newSite, barangay: v })
-                      }
-                    >
-                      <SelectTrigger
-                        className={
-                          siteErrors.barangay
-                            ? "border-destructive focus-visible:ring-destructive/30"
-                            : ""
-                        }
-                      >
-                        <SelectValue placeholder="Select barangay" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {SITE_BARANGAYS.map((b) => (
-                          <SelectItem key={b} value={b}>
-                            {b}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    {siteErrors.barangay && (
-                      <p className="text-xs text-destructive flex items-center gap-1">
-                        <AlertCircle className="size-3" />
-                        {siteErrors.barangay}
-                      </p>
-                    )}
+                  <div className="min-w-0 flex-1">
+                    <div className="font-display text-lg font-semibold truncate">
+                      {viewing.name}
+                    </div>
+                    <div className="text-xs text-muted-foreground font-mono truncate">
+                      {viewing.id}
+                    </div>
                   </div>
-                  <div className="space-y-1.5">
-                    <Label>
-                      Depth Range <span className="text-destructive">*</span>
-                    </Label>
-                    <Input
-                      value={newSite.depth}
-                      onChange={(e) =>
-                        setNewSite({ ...newSite, depth: e.target.value })
-                      }
-                      placeholder="e.g. 10–30 m"
-                      className={
-                        siteErrors.depth
-                          ? "border-destructive focus-visible:ring-destructive/30"
-                          : ""
-                      }
-                    />
-                    {siteErrors.depth && (
-                      <p className="text-xs text-destructive flex items-center gap-1">
-                        <AlertCircle className="size-3" />
-                        {siteErrors.depth}
-                      </p>
-                    )}
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label>
-                      Difficulty <span className="text-destructive">*</span>
-                    </Label>
-                    <Select
-                      value={newSite.difficulty}
-                      onValueChange={(v) =>
-                        setNewSite({ ...newSite, difficulty: v })
-                      }
-                    >
-                      <SelectTrigger
-                        className={
-                          siteErrors.difficulty
-                            ? "border-destructive focus-visible:ring-destructive/30"
-                            : ""
-                        }
-                      >
-                        <SelectValue />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {ALL_DIFFICULTIES.map((d) => (
-                          <SelectItem key={d} value={d}>
-                            {d}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    {siteErrors.difficulty && (
-                      <p className="text-xs text-destructive flex items-center gap-1">
-                        <AlertCircle className="size-3" />
-                        {siteErrors.difficulty}
-                      </p>
-                    )}
-                  </div>
-                  <div className="space-y-1.5 sm:col-span-2">
-                    <Label>
-                      Type <span className="text-destructive">*</span>
-                    </Label>
-                    <ToggleGroup
-                      type="multiple"
-                      variant="outline"
-                      value={newSite.types}
-                      onValueChange={(v) =>
-                        setNewSite({ ...newSite, types: v })
-                      }
-                      className={`flex flex-wrap justify-start gap-2 ${
-                        siteErrors.type
-                          ? "rounded-lg ring-1 ring-destructive/40 p-1"
-                          : ""
-                      }`}
-                    >
-                      {ALL_SITE_TYPES.map((t) => (
-                        <ToggleGroupItem
-                          key={t}
-                          value={t}
-                          className="h-9 rounded-lg px-3"
-                        >
-                          {t}
-                        </ToggleGroupItem>
-                      ))}
-                    </ToggleGroup>
-                    <p className="text-xs text-muted-foreground">
-                      Select one or more.
-                    </p>
-                    {siteErrors.type && (
-                      <p className="text-xs text-destructive flex items-center gap-1">
-                        <AlertCircle className="size-3" />
-                        {siteErrors.type}
-                      </p>
-                    )}
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label>
-                      Latitude <span className="text-destructive">*</span>
-                    </Label>
-                    <Input
-                      value={newSite.lat}
-                      onChange={(e) =>
-                        setNewSite({ ...newSite, lat: e.target.value })
-                      }
-                      placeholder="e.g. 13.7620"
-                      inputMode="decimal"
-                      className={
-                        siteErrors.lat
-                          ? "border-destructive focus-visible:ring-destructive/30"
-                          : ""
-                      }
-                    />
-                    {siteErrors.lat && (
-                      <p className="text-xs text-destructive flex items-center gap-1">
-                        <AlertCircle className="size-3" />
-                        {siteErrors.lat}
-                      </p>
-                    )}
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label>
-                      Longitude <span className="text-destructive">*</span>
-                    </Label>
-                    <Input
-                      value={newSite.lng}
-                      onChange={(e) =>
-                        setNewSite({ ...newSite, lng: e.target.value })
-                      }
-                      placeholder="e.g. 120.9210"
-                      inputMode="decimal"
-                      className={
-                        siteErrors.lng
-                          ? "border-destructive focus-visible:ring-destructive/30"
-                          : ""
-                      }
-                    />
-                    {siteErrors.lng && (
-                      <p className="text-xs text-destructive flex items-center gap-1">
-                        <AlertCircle className="size-3" />
-                        {siteErrors.lng}
-                      </p>
-                    )}
-                  </div>
+                  <Badge
+                    variant="outline"
+                    className={`shrink-0 ${
+                      viewing.status === "Active"
+                        ? "bg-success/10 text-success border-success/20"
+                        : viewing.status === "Seasonal"
+                          ? "bg-warning/15 text-warning-foreground border-warning/30"
+                          : "bg-muted text-muted-foreground border-border"
+                    }`}
+                  >
+                    {viewing.status}
+                  </Badge>
                 </div>
-                <div className="space-y-1.5">
-                  <Label>Description</Label>
-                  <Textarea
-                    value={newSite.description}
-                    onChange={(e) =>
-                      setNewSite({ ...newSite, description: e.target.value })
+                <p className="text-sm leading-relaxed text-muted-foreground break-words">
+                  {viewing.description}
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 sm:gap-3 text-sm">
+                  <Field label="Barangay" value={viewing.barangay} />
+                  <Field label="Depth Range" value={viewing.depth} />
+                  <Field label="Difficulty" value={viewing.difficulty} />
+                  <Field
+                    label="Type"
+                    value={
+                      viewing.types?.length
+                        ? viewing.types.join(", ")
+                        : viewing.type
                     }
-                    placeholder="Brief site description…"
-                    rows={3}
-                    className="resize-y max-h-40"
+                  />
+                  <Field label="Total Dives" value={String(viewing.dives)} />
+                  <Field
+                    label="Trend"
+                    value={
+                      siteTrend(viewing.name) ??
+                      `+${5 + Math.floor(Math.random() * 10)}%`
+                    }
                   />
                 </div>
-                <DialogFooter>
-                  <Button variant="outline" onClick={closeSiteDialog}>
-                    Cancel
+                <div className="flex flex-col sm:flex-row gap-2 pt-2">
+                  <Button
+                    variant="outline"
+                    className="w-full sm:flex-1"
+                    onClick={() => {
+                      setViewing(null);
+                      openEdit(viewing);
+                    }}
+                  >
+                    <Edit3 className="size-4 mr-1.5" /> Edit
                   </Button>
                   <Button
-                    className="gradient-primary text-primary-foreground"
-                    disabled={adding}
-                    onClick={editTarget ? saveEdit : addSite}
+                    variant="outline"
+                    className="w-full sm:flex-1"
+                    disabled={!!toggling[viewing.id]}
+                    onClick={() => {
+                      setViewing(null);
+                      toggleStatus(viewing.id);
+                    }}
                   >
-                    {adding ? (
+                    {toggling[viewing.id] ? (
                       <Loader2 className="size-4 mr-1.5 animate-spin" />
-                    ) : editTarget ? (
-                      <Check className="size-4 mr-1.5" />
-                    ) : (
-                      <Plus className="size-4 mr-1.5" />
-                    )}
-                    {adding
-                      ? editTarget
-                        ? "Saving…"
-                        : "Adding…"
-                      : editTarget
-                        ? "Save Changes"
-                        : "Add Site"}
+                    ) : null}
+                    Toggle Status
                   </Button>
-                </DialogFooter>
+                  {canAdmin && (
+                    <Button
+                      variant="outline"
+                      className="w-full sm:flex-1 border-destructive/30 text-destructive hover:bg-destructive/10"
+                      onClick={() => {
+                        setViewing(null);
+                        attemptDelete(viewing);
+                      }}
+                    >
+                      <Trash2 className="size-4 mr-1.5" /> Delete
+                    </Button>
+                  )}
+                </div>
               </div>
-            </DialogContent>
-          </Dialog>
+            )}
+          </DialogContent>
+        </Dialog>
 
-          {/* Delete confirm (superadmin only; only reachable for sites with
-              zero referencing manifestos — see attemptDelete) */}
-          <Dialog
-            open={!!deleteTarget}
-            onOpenChange={(o) => {
-              if (!o && !deleting) setDeleteTarget(null);
-            }}
-          >
-            <DialogContent className="max-w-md">
-              <DialogHeader>
-                <DialogTitle className="flex items-center gap-2">
-                  <Trash2 className="size-5 text-destructive" /> Delete dive
-                  site
-                </DialogTitle>
-                <p className="text-sm text-muted-foreground pt-1">
-                  Permanently delete{" "}
-                  <span className="font-medium text-foreground">
-                    {deleteTarget?.name}
-                  </span>
-                  {deleteTarget?.id && deleteTarget.id !== "—"
-                    ? ` (${deleteTarget.id})`
-                    : ""}
-                  ? No manifestos reference it. This cannot be undone.
+        {/* Add / Edit Site Dialog (shared fields, prefilled in edit mode) */}
+        <Dialog
+          open={addOpen || !!editTarget}
+          onOpenChange={(o) => {
+            if (!o) closeSiteDialog();
+            else setAddOpen(true);
+          }}
+        >
+          <DialogContent className="w-[min(92vw,36rem)] max-w-none max-h-[90dvh] overflow-y-auto overflow-x-hidden">
+            <DialogHeader>
+              <DialogTitle>
+                {editTarget ? "Edit Dive Site" : "Add Dive Site"}
+              </DialogTitle>
+              <p className="text-sm text-muted-foreground">
+                {editTarget
+                  ? `Update details for ${editTarget.name} (${editTarget.id}).`
+                  : "Register a new dive site with its location and details."}
+              </p>
+            </DialogHeader>
+            <div className="space-y-5">
+              <input
+                ref={fileRef}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={onPhotoPick}
+              />
+              <div
+                className="relative rounded-xl border-2 border-dashed border-border hover:border-primary/50 transition-colors cursor-pointer overflow-hidden group max-h-[28dvh]"
+                onClick={() => fileRef.current?.click()}
+              >
+                {newSite.photo ? (
+                  <>
+                    <img
+                      src={newSite.photo}
+                      alt="Site photo"
+                      className="w-full aspect-video max-h-[28dvh] object-cover"
+                    />
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setNewSite((s) => ({ ...s, photo: "" }));
+                        setPhotoFile(null);
+                        if (fileRef.current) fileRef.current.value = "";
+                      }}
+                      className="absolute top-2 right-2 size-7 rounded-full bg-background/80 backdrop-blur-sm flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors"
+                    >
+                      <X className="size-4" />
+                    </button>
+                    <div className="absolute inset-0 bg-background/60 backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
+                      <span className="text-sm font-medium text-foreground bg-background/80 rounded-lg px-3 py-1.5">
+                        Change photo
+                      </span>
+                    </div>
+                  </>
+                ) : (
+                  <div className="w-full aspect-video max-h-[28dvh] flex flex-col items-center justify-center gap-1.5 text-muted-foreground">
+                    <ImageIcon className="size-8" />
+                    <span className="text-sm font-medium">
+                      Click to upload a photo
+                    </span>
+                    <span className="text-xs">JPG, PNG up to 5 MB</span>
+                  </div>
+                )}
+              </div>
+              {editTarget &&
+                !newSite.photo &&
+                !clearPhoto &&
+                (editTarget.photo || editTarget.photoPath) && (
+                  <div className="flex items-center gap-3 rounded-xl border border-border/60 bg-secondary/40 px-3 py-2 min-w-0">
+                    <SitePhoto
+                      photo={editTarget.photo}
+                      photoPath={editTarget.photoPath}
+                      alt={editTarget.name}
+                      className="size-10 rounded-lg object-cover shrink-0"
+                    />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-xs font-medium truncate">
+                        Current photo
+                      </div>
+                      <div className="text-[11px] text-muted-foreground truncate">
+                        Upload above to replace
+                      </div>
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      className="text-destructive shrink-0"
+                      onClick={() => setClearPhoto(true)}
+                    >
+                      <X className="size-4 mr-1" /> Remove
+                    </Button>
+                  </div>
+                )}
+              {clearPhoto && (
+                <p className="text-xs text-muted-foreground">
+                  Current photo will be removed on save. Upload a new one to
+                  replace it instead.
                 </p>
-              </DialogHeader>
+              )}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 sm:gap-4">
+                <div className="space-y-1.5">
+                  <Label>
+                    Site Name <span className="text-destructive">*</span>
+                  </Label>
+                  <Input
+                    value={newSite.name}
+                    onChange={(e) =>
+                      setNewSite({ ...newSite, name: e.target.value })
+                    }
+                    placeholder="e.g. Cathedral Point"
+                    className={
+                      siteErrors.name
+                        ? "border-destructive focus-visible:ring-destructive/30"
+                        : ""
+                    }
+                  />
+                  {siteErrors.name && (
+                    <p className="text-xs text-destructive flex items-center gap-1">
+                      <AlertCircle className="size-3" />
+                      {siteErrors.name}
+                    </p>
+                  )}
+                </div>
+                <div className="space-y-1.5">
+                  <Label>
+                    Barangay <span className="text-destructive">*</span>
+                  </Label>
+                  <Select
+                    value={newSite.barangay}
+                    onValueChange={(v) =>
+                      setNewSite({ ...newSite, barangay: v })
+                    }
+                  >
+                    <SelectTrigger
+                      className={
+                        siteErrors.barangay
+                          ? "border-destructive focus-visible:ring-destructive/30"
+                          : ""
+                      }
+                    >
+                      <SelectValue placeholder="Select barangay" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {SITE_BARANGAYS.map((b) => (
+                        <SelectItem key={b} value={b}>
+                          {b}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {siteErrors.barangay && (
+                    <p className="text-xs text-destructive flex items-center gap-1">
+                      <AlertCircle className="size-3" />
+                      {siteErrors.barangay}
+                    </p>
+                  )}
+                </div>
+                <div className="space-y-1.5">
+                  <Label>
+                    Depth Range <span className="text-destructive">*</span>
+                  </Label>
+                  <Input
+                    value={newSite.depth}
+                    onChange={(e) =>
+                      setNewSite({ ...newSite, depth: e.target.value })
+                    }
+                    placeholder="e.g. 10–30 m"
+                    className={
+                      siteErrors.depth
+                        ? "border-destructive focus-visible:ring-destructive/30"
+                        : ""
+                    }
+                  />
+                  {siteErrors.depth && (
+                    <p className="text-xs text-destructive flex items-center gap-1">
+                      <AlertCircle className="size-3" />
+                      {siteErrors.depth}
+                    </p>
+                  )}
+                </div>
+                <div className="space-y-1.5">
+                  <Label>
+                    Difficulty <span className="text-destructive">*</span>
+                  </Label>
+                  <Select
+                    value={newSite.difficulty}
+                    onValueChange={(v) =>
+                      setNewSite({ ...newSite, difficulty: v })
+                    }
+                  >
+                    <SelectTrigger
+                      className={
+                        siteErrors.difficulty
+                          ? "border-destructive focus-visible:ring-destructive/30"
+                          : ""
+                      }
+                    >
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {ALL_DIFFICULTIES.map((d) => (
+                        <SelectItem key={d} value={d}>
+                          {d}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  {siteErrors.difficulty && (
+                    <p className="text-xs text-destructive flex items-center gap-1">
+                      <AlertCircle className="size-3" />
+                      {siteErrors.difficulty}
+                    </p>
+                  )}
+                </div>
+                <div className="space-y-1.5 sm:col-span-2">
+                  <Label>
+                    Type <span className="text-destructive">*</span>
+                  </Label>
+                  <ToggleGroup
+                    type="multiple"
+                    variant="outline"
+                    value={newSite.types}
+                    onValueChange={(v) => setNewSite({ ...newSite, types: v })}
+                    className={`flex flex-wrap justify-start gap-2 ${
+                      siteErrors.type
+                        ? "rounded-lg ring-1 ring-destructive/40 p-1"
+                        : ""
+                    }`}
+                  >
+                    {ALL_SITE_TYPES.map((t) => (
+                      <ToggleGroupItem
+                        key={t}
+                        value={t}
+                        className="h-9 rounded-lg px-3"
+                      >
+                        {t}
+                      </ToggleGroupItem>
+                    ))}
+                  </ToggleGroup>
+                  <p className="text-xs text-muted-foreground">
+                    Select one or more.
+                  </p>
+                  {siteErrors.type && (
+                    <p className="text-xs text-destructive flex items-center gap-1">
+                      <AlertCircle className="size-3" />
+                      {siteErrors.type}
+                    </p>
+                  )}
+                </div>
+                <div className="space-y-1.5">
+                  <Label>
+                    Latitude <span className="text-destructive">*</span>
+                  </Label>
+                  <Input
+                    value={newSite.lat}
+                    onChange={(e) =>
+                      setNewSite({ ...newSite, lat: e.target.value })
+                    }
+                    placeholder="e.g. 13.7620"
+                    inputMode="decimal"
+                    className={
+                      siteErrors.lat
+                        ? "border-destructive focus-visible:ring-destructive/30"
+                        : ""
+                    }
+                  />
+                  {siteErrors.lat && (
+                    <p className="text-xs text-destructive flex items-center gap-1">
+                      <AlertCircle className="size-3" />
+                      {siteErrors.lat}
+                    </p>
+                  )}
+                </div>
+                <div className="space-y-1.5">
+                  <Label>
+                    Longitude <span className="text-destructive">*</span>
+                  </Label>
+                  <Input
+                    value={newSite.lng}
+                    onChange={(e) =>
+                      setNewSite({ ...newSite, lng: e.target.value })
+                    }
+                    placeholder="e.g. 120.9210"
+                    inputMode="decimal"
+                    className={
+                      siteErrors.lng
+                        ? "border-destructive focus-visible:ring-destructive/30"
+                        : ""
+                    }
+                  />
+                  {siteErrors.lng && (
+                    <p className="text-xs text-destructive flex items-center gap-1">
+                      <AlertCircle className="size-3" />
+                      {siteErrors.lng}
+                    </p>
+                  )}
+                </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Description</Label>
+                <Textarea
+                  value={newSite.description}
+                  onChange={(e) =>
+                    setNewSite({ ...newSite, description: e.target.value })
+                  }
+                  placeholder="Brief site description…"
+                  rows={3}
+                  className="resize-y max-h-40"
+                />
+              </div>
               <DialogFooter>
-                <Button
-                  variant="outline"
-                  disabled={deleting}
-                  onClick={() => setDeleteTarget(null)}
-                >
+                <Button variant="outline" onClick={closeSiteDialog}>
                   Cancel
                 </Button>
                 <Button
-                  className="bg-destructive text-destructive-foreground hover:opacity-90"
-                  disabled={deleting}
-                  onClick={doDelete}
+                  className="gradient-primary text-primary-foreground"
+                  disabled={adding}
+                  onClick={editTarget ? saveEdit : addSite}
                 >
-                  {deleting ? (
+                  {adding ? (
                     <Loader2 className="size-4 mr-1.5 animate-spin" />
+                  ) : editTarget ? (
+                    <Check className="size-4 mr-1.5" />
                   ) : (
-                    <Trash2 className="size-4 mr-1.5" />
+                    <Plus className="size-4 mr-1.5" />
                   )}
-                  {deleting ? "Deleting…" : "Delete Permanently"}
+                  {adding
+                    ? editTarget
+                      ? "Saving…"
+                      : "Adding…"
+                    : editTarget
+                      ? "Save Changes"
+                      : "Add Site"}
                 </Button>
               </DialogFooter>
-            </DialogContent>
-          </Dialog>
-      </div>
+            </div>
+          </DialogContent>
+        </Dialog>
 
+        {/* Delete confirm (superadmin only; only reachable for sites with
+              zero referencing manifestos — see attemptDelete) */}
+        <Dialog
+          open={!!deleteTarget}
+          onOpenChange={(o) => {
+            if (!o && !deleting) setDeleteTarget(null);
+          }}
+        >
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <Trash2 className="size-5 text-destructive" /> Delete dive site
+              </DialogTitle>
+              <p className="text-sm text-muted-foreground pt-1">
+                Permanently delete{" "}
+                <span className="font-medium text-foreground">
+                  {deleteTarget?.name}
+                </span>
+                {deleteTarget?.id && deleteTarget.id !== "—"
+                  ? ` (${deleteTarget.id})`
+                  : ""}
+                ? No manifestos reference it. This cannot be undone.
+              </p>
+            </DialogHeader>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                disabled={deleting}
+                onClick={() => setDeleteTarget(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                className="bg-destructive text-destructive-foreground hover:opacity-90"
+                disabled={deleting}
+                onClick={doDelete}
+              >
+                {deleting ? (
+                  <Loader2 className="size-4 mr-1.5 animate-spin" />
+                ) : (
+                  <Trash2 className="size-4 mr-1.5" />
+                )}
+                {deleting ? "Deleting…" : "Delete Permanently"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      </div>
     </>
   );
 }
@@ -9080,14 +9177,14 @@ export function OperatorAnalytics() {
       ? bucketByMonth(
           liveManifestsOp.data,
           (m: any) => m.date,
-          (m: any) => m.divers || 0
+          (m: any) => m.divers || 0,
         )
       : null;
     const rb = liveInventoryOp.data
       ? bucketByMonth(
           liveInventoryOp.data,
           (inv: any) => inv.createdAt,
-          (inv: any) => inv.amount || 0
+          (inv: any) => inv.amount || 0,
         )
       : null;
 
@@ -9127,17 +9224,10 @@ export function OperatorAnalytics() {
       dDelta: 0,
       rDelta: 0,
     };
-  }, [
-    liveOperatorRows,
-    liveManifestsOp.data,
-    liveInventoryOp.data,
-    isLive,
-  ]);
+  }, [liveOperatorRows, liveManifestsOp.data, liveInventoryOp.data, isLive]);
 
   const kpiDelta = (delta: number) =>
-    delta === 0 && !opKpis.live
-      ? ""
-      : `${delta >= 0 ? "+" : ""}${delta}`;
+    delta === 0 && !opKpis.live ? "" : `${delta >= 0 ? "+" : ""}${delta}`;
 
   return (
     <div className="relative">
@@ -9170,7 +9260,7 @@ export function OperatorAnalytics() {
           delta={
             opKpis.live && opKpis.rDelta !== 0
               ? `${opKpis.rDelta >= 0 ? "+" : "-"}₱${Math.round(
-                  Math.abs(opKpis.rDelta)
+                  Math.abs(opKpis.rDelta),
                 ).toLocaleString()}`
               : ""
           }
@@ -9178,311 +9268,314 @@ export function OperatorAnalytics() {
         />
       </div>
       <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
-      <SectionCard title="Most Active Operators">
-        <div className="h-80">
-          {isEmptyChartData(scaledOperatorActivity) ? (
-            <ChartEmptyState className="h-80" />
-          ) : (
-          <ResponsiveContainer>
-            <BarChart
-              data={scaledOperatorActivity}
-              layout="vertical"
-              margin={{ left: 20 }}
-            >
-              <CartesianGrid
-                stroke="var(--color-border)"
-                strokeDasharray="3 6"
-                horizontal={false}
-              />
-              <XAxis
-                type="number"
-                stroke="var(--color-muted-foreground)"
-                fontSize={12}
-                tickLine={false}
-                axisLine={false}
-              />
-              <YAxis
-                dataKey="name"
-                type="category"
-                stroke="var(--color-muted-foreground)"
-                fontSize={12}
-                tickLine={false}
-                axisLine={false}
-                width={110}
-              />
-              <Tooltip
-                contentStyle={{
-                  background: "var(--color-card)",
-                  border: "1px solid var(--color-border)",
-                  borderRadius: 12,
-                  fontSize: 12,
-                }}
-              />
-              <Bar
-                dataKey="manifestos"
-                fill="var(--color-primary)"
-                radius={[0, 8, 8, 0]}
-                onClick={(data: any) => data && setDrillOperator(data)}
-                className="cursor-pointer"
-              />
-            </BarChart>
-          </ResponsiveContainer>
-          )}
-        </div>
-      </SectionCard>
-
-      <SectionCard title="Credits Used vs Manifestos">
-        <div className="h-80">
-          {isEmptyChartData(scaledOperatorActivity) ? (
-            <ChartEmptyState className="h-80" />
-          ) : (
-          <ResponsiveContainer>
-            <LineChart
-              data={scaledOperatorActivity}
-              margin={{ left: -12 }}
-              onClick={(e) =>
-                e?.activePayload?.[0]?.payload &&
-                setDrillOperator(e.activePayload[0].payload)
-              }
-            >
-              <CartesianGrid
-                stroke="var(--color-border)"
-                strokeDasharray="3 6"
-                vertical={false}
-              />
-              <XAxis
-                dataKey="name"
-                stroke="var(--color-muted-foreground)"
-                fontSize={11}
-                tickLine={false}
-                axisLine={false}
-              />
-              <YAxis
-                stroke="var(--color-muted-foreground)"
-                fontSize={12}
-                tickLine={false}
-                axisLine={false}
-              />
-              <Tooltip
-                contentStyle={{
-                  background: "var(--color-card)",
-                  border: "1px solid var(--color-border)",
-                  borderRadius: 12,
-                  fontSize: 12,
-                }}
-              />
-              <Line
-                type="monotone"
-                dataKey="credits"
-                stroke="var(--color-primary)"
-                strokeWidth={2.5}
-                dot={{ r: 4, fill: "var(--color-primary)" }}
-              />
-              <Line
-                type="monotone"
-                dataKey="manifestos"
-                stroke="var(--color-primary-glow)"
-                strokeWidth={2.5}
-                dot={{ r: 4, fill: "var(--color-primary-glow)" }}
-              />
-            </LineChart>
-          </ResponsiveContainer>
-          )}
-        </div>
-      </SectionCard>
-
-      <SectionCard title="Operator Leaderboard" className="xl:col-span-2">
-        <Table>
-          <TableHeader>
-            <TableRow className="bg-secondary/50">
-              <TableHead>Operator</TableHead>
-              <TableHead>Manifestos</TableHead>
-              <TableHead>Credits Used</TableHead>
-              <TableHead>Utilization</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {scaledOperatorActivity.map((o) => (
-              <TableRow
-                key={o.name}
-                className="cursor-pointer hover:bg-secondary/50 transition-colors"
-                onClick={() => setDrillOperator(o)}
-              >
-                <TableCell className="font-medium">
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setFilters({
-                        section: "establishments",
-                        tab: "registered",
-                        q: o.name,
-                      });
+        <SectionCard title="Most Active Operators">
+          <div className="h-80">
+            {isEmptyChartData(scaledOperatorActivity) ? (
+              <ChartEmptyState className="h-80" />
+            ) : (
+              <ResponsiveContainer>
+                <BarChart
+                  data={scaledOperatorActivity}
+                  layout="vertical"
+                  margin={{ left: 20 }}
+                >
+                  <CartesianGrid
+                    stroke="var(--color-border)"
+                    strokeDasharray="3 6"
+                    horizontal={false}
+                  />
+                  <XAxis
+                    type="number"
+                    stroke="var(--color-muted-foreground)"
+                    fontSize={12}
+                    tickLine={false}
+                    axisLine={false}
+                  />
+                  <YAxis
+                    dataKey="name"
+                    type="category"
+                    stroke="var(--color-muted-foreground)"
+                    fontSize={12}
+                    tickLine={false}
+                    axisLine={false}
+                    width={110}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      background: "var(--color-card)",
+                      border: "1px solid var(--color-border)",
+                      borderRadius: 12,
+                      fontSize: 12,
                     }}
-                    className="flex items-center gap-2 underline decoration-dotted underline-offset-2 hover:text-primary hover:decoration-solid transition-colors"
-                  >
-                    <Building2 className="size-4 text-primary" /> {o.name}
-                  </button>
-                </TableCell>
-                <TableCell>{o.manifestos}</TableCell>
-                <TableCell>{o.credits.toLocaleString()}</TableCell>
-                <TableCell>
-                  <div className="w-40 h-2 rounded-full bg-secondary overflow-hidden">
-                    <div
-                      className="h-full gradient-primary"
-                      style={{
-                        width: `${((o.manifestos / (scaledOperatorActivity[0]?.manifestos || 1)) * 100).toFixed(1)}%`,
-                      }}
-                    />
-                  </div>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </SectionCard>
-
-      <DrilldownDialog
-        open={!!drillOperator}
-        onOpenChange={(o) => !o && setDrillOperator(null)}
-        title={drillOperator?.name ?? ""}
-        subtitle="Operator performance detail"
-        stats={
-          drillOperator
-            ? [
-                {
-                  label: "Manifestos",
-                  value: drillOperator.manifestos,
-                  icon: ScrollText,
-                },
-                {
-                  label: "Credits used",
-                  value: drillOperator.credits.toLocaleString(),
-                  icon: CreditCard,
-                },
-                {
-                  label: "Utilization",
-                  value:
-                    drillOperator.credits > 0
-                      ? `${((drillOperator.manifestos / drillOperator.credits) * 100).toFixed(0)}%`
-                      : "—",
-                  icon: TrendingUp,
-                },
-              ]
-            : undefined
-        }
-      >
-        {drillOperator && (
-          <div className="space-y-4 mt-2">
-            <Card className="p-4 shadow-elegant">
-              <h4 className="font-display font-semibold text-sm mb-3">
-                Operator summary
-              </h4>
-              <Table>
-                <TableHeader>
-                  <TableRow className="bg-secondary/50">
-                    <TableHead>Metric</TableHead>
-                    <TableHead className="text-right">Value</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  <TableRow>
-                    <TableCell className="text-muted-foreground">
-                      Total manifestos filed
-                    </TableCell>
-                    <TableCell className="text-right font-medium">
-                      {drillOperator.manifestos}
-                    </TableCell>
-                  </TableRow>
-                  <TableRow>
-                    <TableCell className="text-muted-foreground">
-                      Credits purchased
-                    </TableCell>
-                    <TableCell className="text-right font-medium">
-                      {drillOperator.credits.toLocaleString()}
-                    </TableCell>
-                  </TableRow>
-                  <TableRow>
-                    <TableCell className="text-muted-foreground">
-                      Credits remaining
-                    </TableCell>
-                    <TableCell className="text-right font-medium">
-                      {(drillOperator.remaining != null
-                        ? drillOperator.remaining
-                        : drillOperator.credits -
-                          Math.round(drillOperator.manifestos * 18.5)
-                      ).toLocaleString()}
-                    </TableCell>
-                  </TableRow>
-                  <TableRow>
-                    <TableCell className="text-muted-foreground">
-                      Avg divers per manifest
-                    </TableCell>
-                    <TableCell className="text-right font-medium">
-                      {drillOperator.divers != null &&
-                      drillOperator.manifestos > 0
-                        ? (
-                            drillOperator.divers / drillOperator.manifestos
-                          ).toFixed(1)
-                        : (
-                            Math.round(drillOperator.manifestos * 7.2) /
-                            (drillOperator.manifestos || 1)
-                          ).toFixed(1)}
-                    </TableCell>
-                  </TableRow>
-                  <TableRow>
-                    <TableCell className="text-muted-foreground">
-                      Revenue generated
-                    </TableCell>
-                    <TableCell className="text-right font-medium">
-                      ₱{Math.round(
-                        drillOperator.revenue != null
-                          ? drillOperator.revenue
-                          : drillOperator.manifestos * 4200
-                      ).toLocaleString()}
-                    </TableCell>
-                  </TableRow>
-                </TableBody>
-              </Table>
-            </Card>
-            <Card className="p-4 shadow-elegant">
-              <h4 className="font-display font-semibold text-sm mb-3">
-                Recent manifestos
-              </h4>
-              <Table>
-                <TableHeader>
-                  <TableRow className="bg-secondary/50">
-                    <TableHead>ID</TableHead>
-                    <TableHead>Site</TableHead>
-                    <TableHead>Divers</TableHead>
-                    <TableHead>Date</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {opManifests
-                    .filter((m: any) =>
-                      (m.operator ?? "").includes(
-                        drillOperator.name.split(" ")[0]
-                      )
-                    )
-                    .slice(0, 5)
-                    .map((m) => (
-                      <TableRow key={m.id}>
-                        <TableCell className="font-mono text-xs">
-                          {m.id}
-                        </TableCell>
-                        <TableCell className="font-medium">{m.site}</TableCell>
-                        <TableCell>{m.divers}</TableCell>
-                        <TableCell className="text-muted-foreground">
-                          {m.date}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                </TableBody>
-              </Table>
-            </Card>
+                  />
+                  <Bar
+                    dataKey="manifestos"
+                    fill="var(--color-primary)"
+                    radius={[0, 8, 8, 0]}
+                    onClick={(data: any) => data && setDrillOperator(data)}
+                    className="cursor-pointer"
+                  />
+                </BarChart>
+              </ResponsiveContainer>
+            )}
           </div>
-        )}
-      </DrilldownDialog>
+        </SectionCard>
+
+        <SectionCard title="Credits Used vs Manifestos">
+          <div className="h-80">
+            {isEmptyChartData(scaledOperatorActivity) ? (
+              <ChartEmptyState className="h-80" />
+            ) : (
+              <ResponsiveContainer>
+                <LineChart
+                  data={scaledOperatorActivity}
+                  margin={{ left: -12 }}
+                  onClick={(e) =>
+                    e?.activePayload?.[0]?.payload &&
+                    setDrillOperator(e.activePayload[0].payload)
+                  }
+                >
+                  <CartesianGrid
+                    stroke="var(--color-border)"
+                    strokeDasharray="3 6"
+                    vertical={false}
+                  />
+                  <XAxis
+                    dataKey="name"
+                    stroke="var(--color-muted-foreground)"
+                    fontSize={11}
+                    tickLine={false}
+                    axisLine={false}
+                  />
+                  <YAxis
+                    stroke="var(--color-muted-foreground)"
+                    fontSize={12}
+                    tickLine={false}
+                    axisLine={false}
+                  />
+                  <Tooltip
+                    contentStyle={{
+                      background: "var(--color-card)",
+                      border: "1px solid var(--color-border)",
+                      borderRadius: 12,
+                      fontSize: 12,
+                    }}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="credits"
+                    stroke="var(--color-primary)"
+                    strokeWidth={2.5}
+                    dot={{ r: 4, fill: "var(--color-primary)" }}
+                  />
+                  <Line
+                    type="monotone"
+                    dataKey="manifestos"
+                    stroke="var(--color-primary-glow)"
+                    strokeWidth={2.5}
+                    dot={{ r: 4, fill: "var(--color-primary-glow)" }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            )}
+          </div>
+        </SectionCard>
+
+        <SectionCard title="Operator Leaderboard" className="xl:col-span-2">
+          <Table>
+            <TableHeader>
+              <TableRow className="bg-secondary/50">
+                <TableHead>Operator</TableHead>
+                <TableHead>Manifestos</TableHead>
+                <TableHead>Credits Used</TableHead>
+                <TableHead>Utilization</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {scaledOperatorActivity.map((o) => (
+                <TableRow
+                  key={o.name}
+                  className="cursor-pointer hover:bg-secondary/50 transition-colors"
+                  onClick={() => setDrillOperator(o)}
+                >
+                  <TableCell className="font-medium">
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setFilters({
+                          section: "establishments",
+                          tab: "registered",
+                          q: o.name,
+                        });
+                      }}
+                      className="flex items-center gap-2 underline decoration-dotted underline-offset-2 hover:text-primary hover:decoration-solid transition-colors"
+                    >
+                      <Building2 className="size-4 text-primary" /> {o.name}
+                    </button>
+                  </TableCell>
+                  <TableCell>{o.manifestos}</TableCell>
+                  <TableCell>{o.credits.toLocaleString()}</TableCell>
+                  <TableCell>
+                    <div className="w-40 h-2 rounded-full bg-secondary overflow-hidden">
+                      <div
+                        className="h-full gradient-primary"
+                        style={{
+                          width: `${((o.manifestos / (scaledOperatorActivity[0]?.manifestos || 1)) * 100).toFixed(1)}%`,
+                        }}
+                      />
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </SectionCard>
+
+        <DrilldownDialog
+          open={!!drillOperator}
+          onOpenChange={(o) => !o && setDrillOperator(null)}
+          title={drillOperator?.name ?? ""}
+          subtitle="Operator performance detail"
+          stats={
+            drillOperator
+              ? [
+                  {
+                    label: "Manifestos",
+                    value: drillOperator.manifestos,
+                    icon: ScrollText,
+                  },
+                  {
+                    label: "Credits used",
+                    value: drillOperator.credits.toLocaleString(),
+                    icon: CreditCard,
+                  },
+                  {
+                    label: "Utilization",
+                    value:
+                      drillOperator.credits > 0
+                        ? `${((drillOperator.manifestos / drillOperator.credits) * 100).toFixed(0)}%`
+                        : "—",
+                    icon: TrendingUp,
+                  },
+                ]
+              : undefined
+          }
+        >
+          {drillOperator && (
+            <div className="space-y-4 mt-2">
+              <Card className="p-4 shadow-elegant">
+                <h4 className="font-display font-semibold text-sm mb-3">
+                  Operator summary
+                </h4>
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-secondary/50">
+                      <TableHead>Metric</TableHead>
+                      <TableHead className="text-right">Value</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    <TableRow>
+                      <TableCell className="text-muted-foreground">
+                        Total manifestos filed
+                      </TableCell>
+                      <TableCell className="text-right font-medium">
+                        {drillOperator.manifestos}
+                      </TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell className="text-muted-foreground">
+                        Credits purchased
+                      </TableCell>
+                      <TableCell className="text-right font-medium">
+                        {drillOperator.credits.toLocaleString()}
+                      </TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell className="text-muted-foreground">
+                        Credits remaining
+                      </TableCell>
+                      <TableCell className="text-right font-medium">
+                        {(drillOperator.remaining != null
+                          ? drillOperator.remaining
+                          : drillOperator.credits -
+                            Math.round(drillOperator.manifestos * 18.5)
+                        ).toLocaleString()}
+                      </TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell className="text-muted-foreground">
+                        Avg divers per manifest
+                      </TableCell>
+                      <TableCell className="text-right font-medium">
+                        {drillOperator.divers != null &&
+                        drillOperator.manifestos > 0
+                          ? (
+                              drillOperator.divers / drillOperator.manifestos
+                            ).toFixed(1)
+                          : (
+                              Math.round(drillOperator.manifestos * 7.2) /
+                              (drillOperator.manifestos || 1)
+                            ).toFixed(1)}
+                      </TableCell>
+                    </TableRow>
+                    <TableRow>
+                      <TableCell className="text-muted-foreground">
+                        Revenue generated
+                      </TableCell>
+                      <TableCell className="text-right font-medium">
+                        ₱
+                        {Math.round(
+                          drillOperator.revenue != null
+                            ? drillOperator.revenue
+                            : drillOperator.manifestos * 4200,
+                        ).toLocaleString()}
+                      </TableCell>
+                    </TableRow>
+                  </TableBody>
+                </Table>
+              </Card>
+              <Card className="p-4 shadow-elegant">
+                <h4 className="font-display font-semibold text-sm mb-3">
+                  Recent manifestos
+                </h4>
+                <Table>
+                  <TableHeader>
+                    <TableRow className="bg-secondary/50">
+                      <TableHead>ID</TableHead>
+                      <TableHead>Site</TableHead>
+                      <TableHead>Divers</TableHead>
+                      <TableHead>Date</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {opManifests
+                      .filter((m: any) =>
+                        (m.operator ?? "").includes(
+                          drillOperator.name.split(" ")[0],
+                        ),
+                      )
+                      .slice(0, 5)
+                      .map((m) => (
+                        <TableRow key={m.id}>
+                          <TableCell className="font-mono text-xs">
+                            {m.id}
+                          </TableCell>
+                          <TableCell className="font-medium">
+                            {m.site}
+                          </TableCell>
+                          <TableCell>{m.divers}</TableCell>
+                          <TableCell className="text-muted-foreground">
+                            {m.date}
+                          </TableCell>
+                        </TableRow>
+                      ))}
+                  </TableBody>
+                </Table>
+              </Card>
+            </div>
+          )}
+        </DrilldownDialog>
       </div>
     </div>
   );
@@ -9520,12 +9613,12 @@ export function Reports() {
     }
     const tB = bucketByMonth(
       liveTouristsRp.data ?? [],
-      (t: any) => t.registered ?? t.createdAt ?? ""
+      (t: any) => t.registered ?? t.createdAt ?? "",
     );
     const mB = bucketByMonth(
       liveManifestsRp.data ?? [],
       (m: any) => m.date,
-      (m: any) => m.divers || 0
+      (m: any) => m.divers || 0,
     );
     return MONTHS.map((m, i) => ({
       m,
@@ -9545,75 +9638,80 @@ export function Reports() {
         return true;
       };
       const tRows = liveTouristsRp.data!.filter((t: any) =>
-        inRange(t.registered ?? t.createdAt ?? "")
+        inRange(t.registered ?? t.createdAt ?? ""),
       );
       const aRows = liveAppsRp.data!.filter((a: any) => inRange(a.submitted));
       const mRows = liveManifestsRp.data!.filter((m: any) => inRange(m.date));
       const rRows = liveReceiptsRp.data!.filter((r: any) => inRange(r.date));
       const money = (n: number) => `₱${Math.round(n).toLocaleString()}`;
       const year = new Date().getFullYear();
-      const tB = bucketByMonth(tRows, (t: any) => t.registered ?? t.createdAt ?? "");
+      const tB = bucketByMonth(
+        tRows,
+        (t: any) => t.registered ?? t.createdAt ?? "",
+      );
       const aB = bucketByMonth(aRows, (a: any) => a.submitted);
       const mB = bucketByMonth(
         mRows,
         (m: any) => m.date,
-        (m: any) => m.divers || 0
+        (m: any) => m.divers || 0,
       );
       const rB = bucketByMonth(
         rRows,
         (r: any) => r.date,
-        (r: any) => r.amountNum || 0
+        (r: any) => r.amountNum || 0,
       );
       const idx = (m: string) => MONTHS.indexOf(m as (typeof MONTHS)[number]);
       const data =
         range === "daily"
-          ? bucketByDay(tRows, (t: any) => t.registered ?? t.createdAt ?? "").map(
-              (b, i) => {
-                const aD = bucketByDay(aRows, (a: any) => a.submitted);
-                const mD = bucketByDay(
+          ? bucketByDay(
+              tRows,
+              (t: any) => t.registered ?? t.createdAt ?? "",
+            ).map((b, i) => {
+              const aD = bucketByDay(aRows, (a: any) => a.submitted);
+              const mD = bucketByDay(
+                mRows,
+                (m: any) => m.date,
+                (m: any) => m.divers || 0,
+              );
+              const rD = bucketByDay(
+                rRows,
+                (r: any) => r.date,
+                (r: any) => r.amountNum || 0,
+              );
+              return {
+                period: b.label,
+                tourists: b.count,
+                operators: aD[i]?.count ?? 0,
+                manifestos: mD[i]?.count ?? 0,
+                dives: mD[i]?.total ?? 0,
+                revenue: money(rD[i]?.total ?? 0),
+              };
+            })
+          : range === "weekly"
+            ? bucketByWeek(
+                tRows,
+                (t: any) => t.registered ?? t.createdAt ?? "",
+              ).map((b, i) => {
+                const aW = bucketByWeek(aRows, (a: any) => a.submitted);
+                const mW = bucketByWeek(
                   mRows,
                   (m: any) => m.date,
-                  (m: any) => m.divers || 0
+                  (m: any) => m.divers || 0,
                 );
-                const rD = bucketByDay(
+                const rW = bucketByWeek(
                   rRows,
                   (r: any) => r.date,
-                  (r: any) => r.amountNum || 0
+                  (r: any) => r.amountNum || 0,
                 );
                 return {
                   period: b.label,
                   tourists: b.count,
-                  operators: aD[i]?.count ?? 0,
-                  manifestos: mD[i]?.count ?? 0,
-                  dives: mD[i]?.total ?? 0,
-                  revenue: money(rD[i]?.total ?? 0),
+                  operators: aW[i]?.count ?? 0,
+                  manifestos: mW[i]?.count ?? 0,
+                  dives: mW[i]?.total ?? 0,
+                  revenue: money(rW[i]?.total ?? 0),
                 };
-              }
-            )
-          : range === "weekly"
-            ? bucketByWeek(tRows, (t: any) => t.registered ?? t.createdAt ?? "").map(
-                (b, i) => {
-                  const aW = bucketByWeek(aRows, (a: any) => a.submitted);
-                  const mW = bucketByWeek(
-                    mRows,
-                    (m: any) => m.date,
-                    (m: any) => m.divers || 0
-                  );
-                  const rW = bucketByWeek(
-                    rRows,
-                    (r: any) => r.date,
-                    (r: any) => r.amountNum || 0
-                  );
-                  return {
-                    period: b.label,
-                    tourists: b.count,
-                    operators: aW[i]?.count ?? 0,
-                    manifestos: mW[i]?.count ?? 0,
-                    dives: mW[i]?.total ?? 0,
-                    revenue: money(rW[i]?.total ?? 0),
-                  };
-                }
-              )
+              })
             : visibleMonths.map((m) => {
                 const mi = idx(m);
                 return {
@@ -9878,57 +9976,57 @@ export function Reports() {
           {isEmptyChartData(filteredTrends) ? (
             <ChartEmptyState className="h-80" />
           ) : (
-          <ResponsiveContainer>
-            <AreaChart data={filteredTrends} margin={{ left: -12 }}>
-              <defs>
-                <linearGradient id="rpt" x1="0" y1="0" x2="0" y2="1">
-                  <stop
-                    offset="0%"
-                    stopColor="var(--color-primary)"
-                    stopOpacity={0.4}
-                  />
-                  <stop
-                    offset="100%"
-                    stopColor="var(--color-primary)"
-                    stopOpacity={0}
-                  />
-                </linearGradient>
-              </defs>
-              <CartesianGrid
-                stroke="var(--color-border)"
-                strokeDasharray="3 6"
-                vertical={false}
-              />
-              <XAxis
-                dataKey="m"
-                stroke="var(--color-muted-foreground)"
-                fontSize={12}
-                tickLine={false}
-                axisLine={false}
-              />
-              <YAxis
-                stroke="var(--color-muted-foreground)"
-                fontSize={12}
-                tickLine={false}
-                axisLine={false}
-              />
-              <Tooltip
-                contentStyle={{
-                  background: "var(--color-card)",
-                  border: "1px solid var(--color-border)",
-                  borderRadius: 12,
-                  fontSize: 12,
-                }}
-              />
-              <Area
-                type="monotone"
-                dataKey="dives"
-                stroke="var(--color-primary)"
-                strokeWidth={2.5}
-                fill="url(#rpt)"
-              />
-            </AreaChart>
-          </ResponsiveContainer>
+            <ResponsiveContainer>
+              <AreaChart data={filteredTrends} margin={{ left: -12 }}>
+                <defs>
+                  <linearGradient id="rpt" x1="0" y1="0" x2="0" y2="1">
+                    <stop
+                      offset="0%"
+                      stopColor="var(--color-primary)"
+                      stopOpacity={0.4}
+                    />
+                    <stop
+                      offset="100%"
+                      stopColor="var(--color-primary)"
+                      stopOpacity={0}
+                    />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid
+                  stroke="var(--color-border)"
+                  strokeDasharray="3 6"
+                  vertical={false}
+                />
+                <XAxis
+                  dataKey="m"
+                  stroke="var(--color-muted-foreground)"
+                  fontSize={12}
+                  tickLine={false}
+                  axisLine={false}
+                />
+                <YAxis
+                  stroke="var(--color-muted-foreground)"
+                  fontSize={12}
+                  tickLine={false}
+                  axisLine={false}
+                />
+                <Tooltip
+                  contentStyle={{
+                    background: "var(--color-card)",
+                    border: "1px solid var(--color-border)",
+                    borderRadius: 12,
+                    fontSize: 12,
+                  }}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="dives"
+                  stroke="var(--color-primary)"
+                  strokeWidth={2.5}
+                  fill="url(#rpt)"
+                />
+              </AreaChart>
+            </ResponsiveContainer>
           )}
         </div>
       </SectionCard>
@@ -10379,7 +10477,8 @@ function Announcements() {
                 {s}{" "}
                 {s !== "All" && (
                   <span className="ml-1 text-[10px] opacity-70">
-                    ({source.filter((i) => s === "All" || i.status === s).length}
+                    (
+                    {source.filter((i) => s === "All" || i.status === s).length}
                     )
                   </span>
                 )}
@@ -10700,7 +10799,9 @@ function Announcements() {
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-[10px] text-muted-foreground">To</Label>
+                  <Label className="text-[10px] text-muted-foreground">
+                    To
+                  </Label>
                   <Input
                     type="date"
                     value={draft.eventEnd}
@@ -10892,7 +10993,9 @@ function Announcements() {
                   />
                 </div>
                 <div className="space-y-1">
-                  <Label className="text-[10px] text-muted-foreground">To</Label>
+                  <Label className="text-[10px] text-muted-foreground">
+                    To
+                  </Label>
                   <Input
                     type="date"
                     value={editDraft.eventEnd}
@@ -11011,6 +11114,86 @@ function SettingsPage() {
     setUserDialog("invite");
   };
 
+  // 043: admin-managed password reset — the out-of-band recovery path for
+  // staff addresses that don't back a real mailbox (the emailed reset link
+  // was removed alongside it). The admin types the temp password like in the
+  // invite dialog; the server fn revokes the target's other sessions and
+  // sets must_change_password so the staffer is forced to choose their own
+  // at next login (self-reset clears it instead — the caller is signed in).
+  const [pwResetTarget, setPwResetTarget] = useState<{
+    id: string;
+    email: string;
+    fullName: string;
+    self: boolean;
+  } | null>(null);
+  const [pwResetPassword, setPwResetPassword] = useState("");
+  const [showPwReset, setShowPwReset] = useState(false);
+  const [pwResetError, setPwResetError] = useState("");
+  const [pwResetBusy, setPwResetBusy] = useState(false);
+
+  const openPwReset = (u: {
+    _dbId: string;
+    email: string;
+    fullName: string;
+  }) => {
+    setPwResetPassword("");
+    setShowPwReset(false);
+    setPwResetError("");
+    setPwResetTarget({
+      id: u._dbId,
+      email: u.email,
+      fullName: u.fullName,
+      self: isSelf(u._dbId),
+    });
+  };
+
+  const submitPwReset = async () => {
+    const target = pwResetTarget;
+    if (!target) return;
+    if (!canAdmin) return deny("Only Super Admin can reset staff passwords.");
+    if (pwResetPassword.length < 8) {
+      setPwResetError("Password must be at least 8 characters.");
+      return;
+    }
+    const accessToken = await getAccessToken();
+    if (!accessToken) {
+      toast.error("Session expired", {
+        description: "Please sign out and sign in again.",
+      });
+      return;
+    }
+    setPwResetBusy(true);
+    try {
+      const res = await resetStaffPassword({
+        data: {
+          userId: target.id,
+          newPassword: pwResetPassword,
+          accessToken,
+        },
+      });
+      if (!res.ok) {
+        setPwResetError(res.message);
+        return;
+      }
+      invalidateStaff();
+      pushAuditLog(
+        res.isSelf
+          ? `Changed own password (${target.email})`
+          : `Reset password of staff account ${target.email} — forced change at next login`,
+      );
+      toast.success(res.isSelf ? "Password updated" : "Password reset", {
+        description: res.isSelf
+          ? "You're still signed in."
+          : `${target.email} must set their own password at next sign-in. Share the temporary password out-of-band.`,
+      });
+      setPwResetTarget(null);
+    } catch (err) {
+      setPwResetError(dbErrorMessage(err));
+    } finally {
+      setPwResetBusy(false);
+    }
+  };
+
   const submitInvite = async () => {
     if (!canAdmin) return deny("Only Super Admin can create staff accounts.");
     const e: Record<string, string> = {};
@@ -11058,7 +11241,7 @@ function SettingsPage() {
         return;
       }
       pushAuditLog(
-        `Invited staff account ${res.user.email} as ${res.user.role === "superadmin" ? "Super Admin" : "TO Staff"} (${res.status})`
+        `Invited staff account ${res.user.email} as ${res.user.role === "superadmin" ? "Super Admin" : "TO Staff"} (${res.status})`,
       );
       invalidateStaff();
       setUserDialog(null);
@@ -11068,10 +11251,12 @@ function SettingsPage() {
         });
       } else {
         toast.success(
-          res.status === "linked" ? "Staff account linked" : "Staff account created",
+          res.status === "linked"
+            ? "Staff account linked"
+            : "Staff account created",
           {
             description: `${res.user.email} — share the temporary password out-of-band.`,
-          }
+          },
         );
       }
     } catch (err) {
@@ -11085,7 +11270,7 @@ function SettingsPage() {
 
   const isSelf = (id: string) => !!session?.userId && id === session.userId;
   const activeSuperadmins = staffUsers.filter(
-    (u) => u.role === "superadmin" && u.isActive
+    (u) => u.role === "superadmin" && u.isActive,
   ).length;
   // Pending suspend/reactivate, awaiting explicit confirmation. Deactivation
   // cuts a staffer off immediately and revokes their session, so it must not
@@ -11111,11 +11296,11 @@ function SettingsPage() {
       await setStaffActive(id, !u.isActive);
       invalidateStaff();
       pushAuditLog(
-        `${!u.isActive ? "Reactivated" : "Suspended"} staff account ${u.email}`
+        `${!u.isActive ? "Reactivated" : "Suspended"} staff account ${u.email}`,
       );
       toast.success(
         `Staff account ${!u.isActive ? "reactivated" : "suspended"}`,
-        { description: u.email }
+        { description: u.email },
       );
     } catch (e) {
       toast.error("Could not update staff account", {
@@ -11137,11 +11322,7 @@ function SettingsPage() {
       });
       return;
     }
-    if (
-      u.isActive &&
-      u.role === "superadmin" &&
-      activeSuperadmins <= 1
-    ) {
+    if (u.isActive && u.role === "superadmin" && activeSuperadmins <= 1) {
       toast.error("Action not allowed", {
         description:
           "This is the last active superadmin. Promote another staff member first.",
@@ -11186,7 +11367,7 @@ function SettingsPage() {
       }
       invalidateStaff();
       pushAuditLog(
-        `Deleted staff account ${res.deleted.email} (${res.deleted.fullName})`
+        `Deleted staff account ${res.deleted.email} (${res.deleted.fullName})`,
       );
       toast.success("Staff account deleted", {
         description: res.deleted.email,
@@ -11223,7 +11404,7 @@ function SettingsPage() {
       await setStaffRole(id, role);
       invalidateStaff();
       pushAuditLog(
-        `Changed role for ${u.email} to ${role === "superadmin" ? "Super Admin" : "TO Staff"}`
+        `Changed role for ${u.email} to ${role === "superadmin" ? "Super Admin" : "TO Staff"}`,
       );
       toast.success("Role updated", {
         description: `${u.fullName} is now ${role === "superadmin" ? "Super Admin" : "TO Staff"}`,
@@ -11251,7 +11432,7 @@ function SettingsPage() {
   const logs = useMemo(() => {
     const merged = [...memLogs];
     const seen = new Set(
-      memLogs.map((l) => `${l.date}|${l.t}|${l.who}|${l.action}`)
+      memLogs.map((l) => `${l.date}|${l.t}|${l.who}|${l.action}`),
     );
     for (const l of dbLogs.data ?? []) {
       const key = `${l.date}|${l.t}|${l.who}|${l.action}`;
@@ -11269,7 +11450,7 @@ function SettingsPage() {
           ? a.t < b.t
             ? 1
             : -1
-          : 0
+          : 0,
     );
   }, [memLogs, dbLogs.data]);
   const uniqueAuditUsers = useMemo(
@@ -11434,7 +11615,7 @@ function SettingsPage() {
                               onValueChange={(v) =>
                                 setUserRole(
                                   u._dbId,
-                                  v as "staff" | "superadmin"
+                                  v as "staff" | "superadmin",
                                 )
                               }
                             >
@@ -11474,6 +11655,14 @@ function SettingsPage() {
                               Deactivated
                             </Badge>
                           )}
+                          {u.isActive && u.mustChangePassword && (
+                            <Badge
+                              className="ml-1 bg-amber-500/15 text-amber-600 border-amber-500/20 text-[10px]"
+                              title="A temporary password is in effect and hasn't been replaced yet"
+                            >
+                              Temp password
+                            </Badge>
+                          )}
                         </TableCell>
                         <TableCell>
                           <span className="text-muted-foreground">
@@ -11482,6 +11671,26 @@ function SettingsPage() {
                         </TableCell>
                         <TableCell className="text-right">
                           <div className="flex justify-end gap-1">
+                            {/* 043: admin-managed reset — the no-mailbox
+                                fallback for a forgotten password. Available
+                                to every active row INCLUDING self, since a
+                                superadmin's own address can be dead too. */}
+                            {u.isActive && (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                disabled={busy}
+                                title={
+                                  self
+                                    ? "Set a new password for your own account"
+                                    : "Set a temporary password this staff member must replace at next sign-in"
+                                }
+                                onClick={() => openPwReset(u)}
+                              >
+                                <KeyRound className="size-4" />{" "}
+                                {self ? "Change pw" : "Reset pw"}
+                              </Button>
+                            )}
                             <Button
                               size="sm"
                               variant="ghost"
@@ -11562,8 +11771,10 @@ function SettingsPage() {
                 {confirmToggle?.suspend ? (
                   <>
                     <span className="font-medium text-foreground">
-                      {staffUsers.find((x) => x._dbId === confirmToggle?.id)
-                        ?.fullName}
+                      {
+                        staffUsers.find((x) => x._dbId === confirmToggle?.id)
+                          ?.fullName
+                      }
                     </span>{" "}
                     will be signed out immediately and blocked from signing in
                     again until reactivated. Their audit history is kept. This
@@ -11573,10 +11784,8 @@ function SettingsPage() {
                   <>
                     This staff member will regain full access to the dashboard
                     according to their{" "}
-                    <span className="font-medium text-foreground">
-                      role
-                    </span>
-                    . This is recorded in the audit log.
+                    <span className="font-medium text-foreground">role</span>.
+                    This is recorded in the audit log.
                   </>
                 )}
               </DialogDescription>
@@ -11587,9 +11796,7 @@ function SettingsPage() {
                 variant="outline"
                 className="h-11"
                 onClick={() => setConfirmToggle(null)}
-                disabled={
-                  !!confirmToggle && !!rowBusy[confirmToggle.id]
-                }
+                disabled={!!confirmToggle && !!rowBusy[confirmToggle.id]}
               >
                 Cancel
               </Button>
@@ -11628,9 +11835,9 @@ function SettingsPage() {
                 <span className="font-medium text-foreground">
                   {confirmDelete?.fullName}
                 </span>{" "}
-                ({confirmDelete?.email}) and signs them out for good. The account
-                can never be recovered — their audit history is kept, but the
-                staff record is gone. This is recorded in the audit log.
+                ({confirmDelete?.email}) and signs them out for good. The
+                account can never be recovered — their audit history is kept,
+                but the staff record is gone. This is recorded in the audit log.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-2">
@@ -11687,6 +11894,113 @@ function SettingsPage() {
           </DialogContent>
         </Dialog>
 
+        {/* 043: admin-managed password reset */}
+        <Dialog
+          open={!!pwResetTarget}
+          onOpenChange={(o) => {
+            if (!o && !pwResetBusy) setPwResetTarget(null);
+          }}
+        >
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>
+                {pwResetTarget?.self
+                  ? "Change your password"
+                  : "Set a temporary password"}
+              </DialogTitle>
+              <DialogDescription className="pt-1">
+                {pwResetTarget?.self ? (
+                  <>
+                    Set a new password for{" "}
+                    <span className="font-medium text-foreground">
+                      your own account
+                    </span>
+                    . You stay signed in.
+                  </>
+                ) : (
+                  <>
+                    Give{" "}
+                    <span className="font-medium text-foreground">
+                      {pwResetTarget?.fullName}
+                    </span>{" "}
+                    a temporary password and hand it over out-of-band. They'll
+                    be signed out everywhere and must set their own password
+                    before opening the dashboard. This is recorded in the audit
+                    log.
+                  </>
+                )}
+              </DialogDescription>
+            </DialogHeader>
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                submitPwReset();
+              }}
+              className="space-y-4"
+            >
+              <div className="space-y-2">
+                <Label htmlFor="pw-reset">
+                  {pwResetTarget?.self ? "New password" : "Temporary password"}{" "}
+                  <span className="text-destructive">*</span>
+                </Label>
+                <div className="relative">
+                  <Input
+                    id="pw-reset"
+                    type={showPwReset ? "text" : "password"}
+                    value={pwResetPassword}
+                    onChange={(e) => {
+                      setPwResetPassword(e.target.value);
+                      if (pwResetError) setPwResetError("");
+                    }}
+                    autoComplete="new-password"
+                    disabled={pwResetBusy}
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowPwReset((v) => !v)}
+                    title={showPwReset ? "Hide password" : "Show password"}
+                    aria-label={showPwReset ? "Hide password" : "Show password"}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    {showPwReset ? (
+                      <EyeOff className="size-4" />
+                    ) : (
+                      <Eye className="size-4" />
+                    )}
+                  </button>
+                </div>
+                {pwResetError && (
+                  <p className="text-xs text-destructive">{pwResetError}</p>
+                )}
+              </div>
+              <DialogFooter>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => setPwResetTarget(null)}
+                  disabled={pwResetBusy}
+                  className="h-11"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={pwResetBusy || pwResetPassword.length < 8}
+                  className="h-11 gradient-primary text-primary-foreground"
+                >
+                  {pwResetBusy ? (
+                    <Loader2 className="size-4 animate-spin" />
+                  ) : pwResetTarget?.self ? (
+                    "Update password"
+                  ) : (
+                    "Set temporary password"
+                  )}
+                </Button>
+              </DialogFooter>
+            </form>
+          </DialogContent>
+        </Dialog>
+
         <Dialog
           open={userDialog === "invite"}
           onOpenChange={(o) => {
@@ -11697,9 +12011,9 @@ function SettingsPage() {
             <DialogHeader>
               <DialogTitle>Invite a staff member</DialogTitle>
               <p className="text-sm text-muted-foreground pt-1">
-                Creates the auth account (auto-confirmed) and links the
-                staff row in one step. Share the temporary password
-                out-of-band — they should change it after first sign-in.
+                Creates the auth account (auto-confirmed) and links the staff
+                row in one step. Share the temporary password out-of-band — they
+                should change it after first sign-in.
               </p>
             </DialogHeader>
             <div className="space-y-4">

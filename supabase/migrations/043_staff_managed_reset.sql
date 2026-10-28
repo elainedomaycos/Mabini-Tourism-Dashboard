@@ -1,0 +1,41 @@
+-- 043_staff_managed_reset.sql
+-- Staff password resets happen through a Super Admin, not email: the staff
+-- addresses on to_staff are organizational (name@mabini.gov.ph-style) and do
+-- not always back a real mailbox, so the emailed recovery link can deadlock a
+-- forgotten password. Flow (implemented client-side + service-role server
+-- fn reset-staff-password-fn.ts):
+--   1. Superadmin sets a new password for the staffer (Settings → Manage
+--      Users). The fn sets must_change_password = true and revokes the
+--      staffer's other auth sessions.
+--   2. The staffer signs in with the handed-over password; the dashboard
+--      blocks everything until they set their own password (they can read
+--      their own row, so the flag is visible at login via 030's policy; the
+--      staff member clears it through clear-password-flag-fn.ts because 034
+--      deliberately gives staff no UPDATE path on to_staff).
+-- Self-reset (target = caller) keeps the flag false — an already-signed-in
+-- admin changing their own password needs no forced prompt.
+--
+-- Break-glass: if the ONLY active superadmin forgets their password while
+-- logged out, no one can reach this feature. Recover manually:
+--   1. Supabase Dashboard → Authentication → Users → the account →
+--      "Send password recovery" is unusable for a dead mailbox — instead use
+--      "Reset password" / Update password there, or in the SQL editor:
+--        -- password cannot be SET by SQL directly; use the Dashboard's
+--        -- update-password control for that user
+--   2. Clear the (unset) flag if needed:
+--        update public.to_staff set must_change_password = false
+--         where email = '<the-address>';
+--
+-- Idempotency: IF NOT EXISTS column add (statement-level commit, safe re-run).
+-- No policy changes: staff SELECT own row (030:31) already exposes the flag;
+-- superadmin UPDATE (034:41) covers admin-side management. Applies after 030.
+-- Apply in Supabase SQL Editor (service role / postgres).
+
+alter table public.to_staff
+  add column if not exists must_change_password boolean not null default false;
+
+-- Verification probes (run after applying):
+--   select id, email, must_change_password from public.to_staff;
+--   select column_name, data_type, column_default from information_schema.columns
+--    where table_schema = 'public' and table_name = 'to_staff'
+--    order by ordinal_position;
