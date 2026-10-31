@@ -3132,7 +3132,7 @@ function Overview({
               },
               {
                 icon: UserCheck,
-                label: "Active IDs",
+                label: "Active Users",
                 value: ovLive ? String(m?.activeIds ?? 0) : "358",
                 sample,
                 target: { section: "tourists", status: "Active", q: "" },
