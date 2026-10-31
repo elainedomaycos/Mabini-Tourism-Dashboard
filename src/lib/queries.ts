@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { supabase, isSupabaseConfigured } from "./supabase";
+import { displayNationality } from "./metrics";
 
 /**
  * Live data layer for the TO dashboard (reads-first scope).
@@ -25,6 +26,32 @@ export function useLiveMode(): boolean {
 
 /** Non-hook equivalent for event handlers / async callbacks. */
 export const isLiveMode = (): boolean => isSupabaseConfigured;
+
+type LiveListQuery<T> = {
+  data: T[] | undefined;
+  isPending: boolean;
+  isError: boolean;
+};
+
+export function useLiveList<TLive, TDemo>(
+  isLive: boolean,
+  query: LiveListQuery<TLive>,
+  demoRows: TDemo[],
+): {
+  rows: Array<TLive | TDemo>;
+  isLoading: boolean;
+  isError: boolean;
+  usingDemo: boolean;
+} {
+  const isLoading = isLive && query.isPending;
+  const usingDemo = !isLive || (query.isError && query.data === undefined);
+  return {
+    rows: usingDemo ? demoRows : (query.data ?? []),
+    isLoading,
+    isError: query.isError,
+    usingDemo,
+  };
+}
 
 /**
  * Human-readable message for anything a live write can throw: Error
@@ -306,7 +333,7 @@ async function fetchTourists(): Promise<LiveTouristRow[]> {
       _dbId: t.id,
       id: shortId(t.id),
       name: t.full_name,
-      nationality: t.nationality ?? null,
+      nationality: displayNationality(t.nationality) || null,
       level: t.certification_level ?? null,
       status,
       registered: dayOf(t.date_accredited || t.created_at),

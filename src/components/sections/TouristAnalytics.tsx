@@ -1,8 +1,6 @@
 import { useState, useMemo } from "react";
-import { Users, Globe, Award, TrendingUp, Filter } from "lucide-react";
-import { Card } from "@/components/ui/card";
+import { Users, Globe, Award, TrendingUp } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import {
   Table,
   TableBody,
@@ -16,20 +14,19 @@ import {
   StatCard,
   Reveal,
   DrilldownDialog,
+  chartAxisProps,
+  chartTooltipStyle,
 } from "@/components/shared";
+import { AnalyticsState } from "@/components/AnalyticsState";
 import {
   ChartEmptyState,
   isEmptyChartData,
 } from "@/components/ChartEmptyState";
-import {
-  useLiveMode,
-  useTouristsLive,
-  useManifestsLive,
-  useOperatorApplicationsLive,
-  bucketByMonth,
-} from "@/lib/queries";
+import { useLiveMode } from "@/lib/queries";
 import { InsightWidget } from "@/components/InsightWidget";
 import { buildTouristInsight } from "@/lib/insights";
+import { aggregateDaily, normalizeLevel, useMetrics } from "@/lib/metrics";
+import type { DateRange } from "@/lib/period";
 import {
   ResponsiveContainer,
   PieChart,
@@ -41,17 +38,15 @@ import {
   YAxis,
   CartesianGrid,
   Tooltip,
-  RadialBarChart,
-  RadialBar,
 } from "recharts";
 
 const nationality = [
-  { name: "USA", value: 38 },
-  { name: "Germany", value: 22 },
-  { name: "Japan", value: 20 },
-  { name: "UK", value: 16 },
-  { name: "Mexico", value: 12 },
-  { name: "Other", value: 8 },
+  { name: "USA", value: 30 },
+  { name: "Germany", value: 21 },
+  { name: "Japan", value: 18 },
+  { name: "UK", value: 13 },
+  { name: "Mexico", value: 9 },
+  { name: "Other", value: 9 },
 ];
 
 const diveLevel = [
@@ -80,7 +75,19 @@ const monthlyRegistrations = [
 
 const nationalityByLevel = [
   {
+    nationality: "Philippines",
+    domestic: true,
+    intro: 20,
+    openWater: 110,
+    advanced: 55,
+    rescue: 20,
+    divemaster: 10,
+    instructor: 5,
+    unknown: 3,
+  },
+  {
     nationality: "USA",
+    domestic: false,
     openWater: 145,
     advanced: 98,
     rescue: 42,
@@ -89,6 +96,7 @@ const nationalityByLevel = [
   },
   {
     nationality: "Germany",
+    domestic: false,
     openWater: 78,
     advanced: 62,
     rescue: 25,
@@ -97,6 +105,7 @@ const nationalityByLevel = [
   },
   {
     nationality: "Japan",
+    domestic: false,
     openWater: 88,
     advanced: 54,
     rescue: 20,
@@ -105,6 +114,7 @@ const nationalityByLevel = [
   },
   {
     nationality: "UK",
+    domestic: false,
     openWater: 56,
     advanced: 38,
     rescue: 18,
@@ -113,6 +123,7 @@ const nationalityByLevel = [
   },
   {
     nationality: "Mexico",
+    domestic: false,
     openWater: 42,
     advanced: 28,
     rescue: 14,
@@ -120,7 +131,19 @@ const nationalityByLevel = [
     instructor: 5,
   },
   {
+    nationality: "Unknown",
+    domestic: false,
+    intro: 4,
+    openWater: 14,
+    advanced: 6,
+    rescue: 2,
+    divemaster: 1,
+    instructor: 0,
+    unknown: 8,
+  },
+  {
     nationality: "Other",
+    domestic: false,
     openWater: 30,
     advanced: 18,
     rescue: 8,
@@ -128,6 +151,44 @@ const nationalityByLevel = [
     instructor: 3,
   },
 ];
+
+type NationalityGroup = "Filipino" | "Foreign" | "Unknown";
+
+const isUnknownNationality = (name: string | null | undefined) => {
+  const value = String(name ?? "").trim();
+  return value === "" || value.toLowerCase() === "unknown";
+};
+
+const nationalityGroup = (
+  name: string,
+  domestic: boolean,
+): NationalityGroup =>
+  isUnknownNationality(name) ? "Unknown" : domestic ? "Filipino" : "Foreign";
+
+const nationalityGroups = (() => {
+  const counts: Record<NationalityGroup, number> = {
+    Filipino: 0,
+    Foreign: 0,
+    Unknown: 0,
+  };
+  for (const row of nationalityByLevel) {
+    const total =
+      (row.intro ?? 0) +
+      row.openWater +
+      row.advanced +
+      row.rescue +
+      row.divemaster +
+      row.instructor +
+      (row.unknown ?? 0);
+    counts[nationalityGroup(row.nationality, row.domestic)] += total;
+  }
+  const total = counts.Filipino + counts.Foreign + counts.Unknown;
+  return (["Filipino", "Foreign", "Unknown"] as const).map((name) => ({
+    name,
+    value: total > 0 ? Math.round((counts[name] / total) * 100) : 0,
+    count: counts[name],
+  }));
+})();
 
 const topTourists = [
   { name: "Emma Larsen", nationality: "USA", dives: 187, level: "Instructor" },
@@ -155,38 +216,14 @@ const topTourists = [
   },
 ];
 
-const revenuePerNationality = [
-  { nationality: "USA", revenue: 42000, avgSpend: 1105 },
-  { nationality: "Germany", revenue: 28000, avgSpend: 1273 },
-  { nationality: "Japan", revenue: 24000, avgSpend: 1200 },
-  { nationality: "UK", revenue: 18500, avgSpend: 1156 },
-  { nationality: "Mexico", revenue: 12000, avgSpend: 1000 },
-  { nationality: "Other", revenue: 9500, avgSpend: 1188 },
-];
-
-const levelFunnel = [
-  { level: "Intro", tourists: 395, pct: 100 },
-  { level: "Open Water", tourists: 365, pct: 92 },
-  { level: "Advanced", tourists: 227, pct: 57 },
-  { level: "Rescue", tourists: 97, pct: 25 },
-  { level: "Divemaster", tourists: 73, pct: 18 },
-  { level: "Instructor", tourists: 49, pct: 12 },
-];
-
 const CHART_COLORS = [
   "var(--color-chart-1)",
   "var(--color-chart-2)",
   "var(--color-chart-3)",
   "var(--color-chart-4)",
   "var(--color-chart-5)",
+  "oklch(0.85 0.05 250)",
 ];
-
-const RADIAL_DATA = diveLevel.map((d, i) => ({
-  ...d,
-  fill: CHART_COLORS[i % CHART_COLORS.length],
-}));
-
-const DOMESTIC_NATIONALITIES = new Set(["Philippines"]);
 
 const LEVEL_ORDER = [
   "Intro",
@@ -197,387 +234,376 @@ const LEVEL_ORDER = [
   "Instructor",
 ] as const;
 
+type MarketFilter = "all" | "domestic" | "international";
+
 type NatDatum = { name: string; value: number; count?: number };
 
-const LEVEL_KEY: Record<
-  string,
-  "openWater" | "advanced" | "rescue" | "divemaster" | "instructor"
-> = {
+type LevelKey =
+  | "intro"
+  | "openWater"
+  | "advanced"
+  | "rescue"
+  | "divemaster"
+  | "instructor"
+  | "unknown";
+
+type NatLevelRow = {
+  nationality: string;
+  domestic: boolean;
+  intro?: number;
+  openWater: number;
+  advanced: number;
+  rescue: number;
+  divemaster: number;
+  instructor: number;
+  unknown?: number;
+};
+
+const emptyNatLevelRow = (
+  nationality: string,
+  domestic: boolean,
+): NatLevelRow => ({
+  nationality,
+  domestic,
+  intro: 0,
+  openWater: 0,
+  advanced: 0,
+  rescue: 0,
+  divemaster: 0,
+  instructor: 0,
+  unknown: 0,
+});
+
+const LEVEL_KEY: Record<string, LevelKey> = {
+  Intro: "intro",
   "Open Water": "openWater",
   Advanced: "advanced",
   Rescue: "rescue",
   Divemaster: "divemaster",
   Instructor: "instructor",
+  Unknown: "unknown",
 };
 
-/** Map a free-text certification level to a canonical bucket. */
-function normalizeLevel(raw: string | null | undefined): string | null {
-  if (!raw) return null;
-  const s = raw.toLowerCase();
-  if (s.includes("intro")) return "Intro";
-  if (s.includes("open")) return "Open Water";
-  if (s.includes("advanced")) return "Advanced";
-  if (s.includes("rescue")) return "Rescue";
-  if (s.includes("master")) return "Divemaster";
-  if (s.includes("instructor")) return "Instructor";
-  return null;
-}
+const marketDomestic = (market: MarketFilter, domestic: boolean) =>
+  market === "all" || (market === "domestic" ? domestic : !domestic);
 
-export function TouristAnalytics() {
+const signed = (value: number) => (value > 0 ? `+${value}` : String(value));
+
+export function TouristAnalytics({ range }: { range: DateRange }) {
   const [natDrilldown, setNatDrilldown] = useState<string | null>(null);
   const [levelDrilldown, setLevelDrilldown] = useState<string | null>(null);
-  const [marketFilter, setMarketFilter] = useState<
-    "all" | "domestic" | "international"
-  >("all");
+  const [marketFilter, setMarketFilter] = useState<MarketFilter>("all");
 
-  // Charts derive from live rows when available, else fall back to mock.
-  // Live KPIs (React Query cache — no extra fetch). Deltas are real
-  // month-over-month new counts. Avg Dives is the global divers-per-tourist
-  // average (manifest divers carry no nationality, so it ignores marketFilter).
   const isLive = useLiveMode();
-  const liveTourists = useTouristsLive();
-  const liveManifests = useManifestsLive();
-  // Only read (not displayed) — feeds the insights widget's backlog rule.
-  const liveApps = useOperatorApplicationsLive();
-  const pendingAppCount = useMemo(
-    () =>
-      (liveApps.data ?? []).filter((a) => a.status === "Pending").length,
-    [liveApps.data]
-  );
-  const liveRows = liveTourists.data;
-  const isLiveData = isLive && !!liveRows;
-  const inMarket = (nat: string | null | undefined) =>
-    marketFilter === "all"
-      ? true
-      : marketFilter === "domestic"
-        ? nat != null && DOMESTIC_NATIONALITIES.has(nat)
-        : nat == null || !DOMESTIC_NATIONALITIES.has(nat);
-  const liveFiltered = useMemo(
-    () => (liveRows ?? []).filter((t) => inMarket(t.nationality)),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [liveRows, marketFilter]
-  );
-  const liveTotalDivers = liveManifests.data
-    ? liveManifests.data.reduce((a, m) => a + (m.divers || 0), 0)
-    : 0;
-  const liveBuckets = useMemo(
-    () =>
-      bucketByMonth(liveFiltered, (t: any) => t.createdAt ?? t.registered ?? ""),
-    [liveFiltered]
-  );
-  const curMonth = new Date().getMonth();
-  const prevMonth = (curMonth + 11) % 12;
-  const mom = (cur: number, prev: number) => ({
-    label: `${cur - prev >= 0 ? "+" : ""}${cur - prev}`,
-    up: cur - prev >= 0,
-  });
-  const liveCards = useMemo(() => {
-    if (!isLiveData || !liveRows) return null;
-    const levelCounts = new Map<string, number>();
-    const natSet = new Set<string>();
-    const firstSeen = new Map<string, number>();
-    for (const t of liveFiltered) {
-      if (t.level) levelCounts.set(t.level, (levelCounts.get(t.level) || 0) + 1);
-      if (t.nationality) {
-        natSet.add(t.nationality);
-        const d = (t as any).createdAt ?? (t as any).registered ?? "";
-        const m = d && d !== "—" ? new Date(d.length <= 10 ? d + "T00:00:00" : d).getMonth() : -1;
-        if (m >= 0 && (!firstSeen.has(t.nationality) || m < firstSeen.get(t.nationality)!)) {
-          firstSeen.set(t.nationality, m);
-        }
-      }
-    }
-    const mostCommon =
-      [...levelCounts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ??
-      "—";
-    const newNats = [...firstSeen.values()].filter((m) => m === curMonth).length;
-    const newTotal = mom(
-      liveBuckets[curMonth]?.count ?? 0,
-      liveBuckets[prevMonth]?.count ?? 0
-    );
-    const avg =
-      liveRows.length > 0 && liveManifests.data
-        ? Math.round(liveTotalDivers / liveRows.length)
-        : 0;
-    const diversBuckets = liveManifests.data
-      ? bucketByMonth(
-          liveManifests.data,
-          (m) => m.date,
-          (m) => m.divers || 0
-        )
-      : [];
-    const avgDelta = mom(
-      diversBuckets[curMonth]?.total ?? 0,
-      diversBuckets[prevMonth]?.total ?? 0
-    );
-    return { mostCommon, newNats, newTotal, avg, avgDelta };
-  }, [
-    isLiveData,
-    liveRows,
-    liveFiltered,
-    liveBuckets,
-    liveTotalDivers,
-    liveManifests.data,
-    curMonth,
-    prevMonth,
-  ]);
+  const isDemo = !isLive;
+  const metrics = useMetrics("tourist", range);
+  const m = metrics.data;
 
-  // --- Derived datasets: live rows when available, mock otherwise --------
-  const nationalityData = useMemo<NatDatum[]>(() => {
-    if (!isLiveData) return nationality;
-    const m = new Map<string, number>();
-    for (const t of liveFiltered) {
-      const n =
-        t.nationality && t.nationality.trim() ? t.nationality : "Unknown";
-      m.set(n, (m.get(n) ?? 0) + 1);
+  const filteredNationalities = useMemo(
+    () =>
+      (m?.nationalities ?? []).filter((row) =>
+        marketDomestic(marketFilter, row.domestic),
+      ),
+    [m, marketFilter],
+  );
+
+  const filteredLevels = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const row of m?.levels ?? []) {
+      if (!marketDomestic(marketFilter, row.domestic)) continue;
+      const name = normalizeLevel(row.name) ?? "Unknown";
+      counts.set(name, (counts.get(name) ?? 0) + row.count);
     }
-    const total = [...m.values()].reduce((a, c) => a + c, 0) || 1;
-    return [...m.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .map(([name, count]) => ({
-        name,
-        value: Math.round((count / total) * 100),
-        count,
+    return [...counts.entries()]
+      .sort(
+        (a, b) =>
+          LEVEL_ORDER.indexOf(a[0] as (typeof LEVEL_ORDER)[number]) -
+          LEVEL_ORDER.indexOf(b[0] as (typeof LEVEL_ORDER)[number]),
+      )
+      .map(([name, count]) => ({ name, count }));
+  }, [m, marketFilter]);
+
+  const nationalityData = useMemo<NatDatum[]>(() => {
+    if (!m) {
+      if (!isDemo) return [];
+      const rows = nationalityGroups.filter(
+        (row) =>
+          row.name === "Unknown" ||
+          marketFilter === "all" ||
+          (marketFilter === "domestic"
+            ? row.name === "Filipino"
+            : row.name === "Foreign"),
+      );
+      const total = rows.reduce((sum, row) => sum + row.count, 0);
+      return rows.map((row) => ({
+        ...row,
+        value: total > 0 ? Math.round((row.count / total) * 100) : 0,
       }));
-  }, [isLiveData, liveFiltered]);
+    }
+    const counts: Record<NationalityGroup, number> = {
+      Filipino: 0,
+      Foreign: 0,
+      Unknown: 0,
+    };
+    for (const row of m.nationalities) {
+      if (
+        !isUnknownNationality(row.name) &&
+        !marketDomestic(marketFilter, row.domestic)
+      ) {
+        continue;
+      }
+      counts[nationalityGroup(row.name, row.domestic)] += row.count;
+    }
+    const total = counts.Filipino + counts.Foreign + counts.Unknown;
+    return (["Filipino", "Foreign", "Unknown"] as const)
+      .filter((name) => counts[name] > 0)
+      .map((name) => ({
+        name,
+        value: total > 0 ? Math.round((counts[name] / total) * 100) : 0,
+        count: counts[name],
+      }));
+  }, [m, isDemo, marketFilter]);
 
   const levelData = useMemo<NatDatum[]>(() => {
-    if (!isLiveData) return diveLevel;
-    const m = new Map<string, number>();
-    for (const t of liveFiltered) {
-      const lvl = normalizeLevel(t.level) ?? "Unknown";
-      m.set(lvl, (m.get(lvl) ?? 0) + 1);
-    }
-    const total = [...m.values()].reduce((a, c) => a + c, 0) || 1;
-    const order: string[] = [...LEVEL_ORDER, "Unknown"];
-    return [...m.entries()]
-      .sort((a, b) => order.indexOf(a[0]) - order.indexOf(b[0]))
-      .map(([name, count]) => ({
-        name,
-        value: Math.round((count / total) * 100),
-        count,
-      }));
-  }, [isLiveData, liveFiltered]);
+    if (!m) return isDemo ? diveLevel : [];
+    const total = filteredLevels.reduce((sum, row) => sum + row.count, 0) || 1;
+    return filteredLevels.map((row) => ({
+      name: row.name,
+      value: Math.round((row.count / total) * 100),
+      count: row.count,
+    }));
+  }, [m, isDemo, filteredLevels]);
 
-  const radialData = useMemo(
-    () =>
-      levelData.map((d, i) => ({
-        ...d,
-        fill: CHART_COLORS[i % CHART_COLORS.length],
-      })),
-    [levelData]
-  );
+  const monthlyData = useMemo(() => {
+    if (!m) return isDemo ? monthlyRegistrations : [];
+    return aggregateDaily(
+      range,
+      m.daily,
+      (row) => row.date,
+      () => ({ count: 0 }),
+      (acc, row) => {
+        acc.count +=
+          marketFilter === "all"
+            ? row.all
+            : marketFilter === "domestic"
+              ? row.domestic
+              : row.international;
+      },
+    ).map((bucket) => ({ m: bucket.label, count: bucket.count }));
+  }, [m, isDemo, marketFilter, range]);
 
-  const monthlyData = useMemo(
-    () =>
-      isLiveData
-        ? liveBuckets.map((b) => ({ m: b.m, count: b.count }))
-        : monthlyRegistrations,
-    [isLiveData, liveBuckets]
-  );
-
-  const natByLevelData = useMemo(() => {
-    if (!isLiveData) return nationalityByLevel;
-    type Row = (typeof nationalityByLevel)[number];
-    const m = new Map<string, Row>();
-    for (const t of liveFiltered) {
-      const key = LEVEL_KEY[normalizeLevel(t.level) ?? ""];
+  const natByLevelData = useMemo<NatLevelRow[]>(() => {
+    if (!m) return isDemo ? nationalityByLevel : [];
+    const rows = new Map<string, NatLevelRow>();
+    for (const item of m.nationalityLevels) {
+      if (
+        !isUnknownNationality(item.nationality) &&
+        !marketDomestic(marketFilter, item.domestic)
+      ) {
+        continue;
+      }
+      const key = LEVEL_KEY[normalizeLevel(item.level) ?? "Unknown"];
       if (!key) continue;
-      const nat =
-        t.nationality && t.nationality.trim() ? t.nationality : "Unknown";
       const row =
-        m.get(nat) ??
-        ({
-          nationality: nat,
-          openWater: 0,
-          advanced: 0,
-          rescue: 0,
-          divemaster: 0,
-          instructor: 0,
-        } as Row);
-      row[key] += 1;
-      m.set(nat, row);
+        rows.get(item.nationality) ??
+        emptyNatLevelRow(item.nationality, item.domestic);
+      row[key] = (row[key] ?? 0) + item.count;
+      rows.set(item.nationality, row);
     }
-    const sum = (r: Row) =>
-      r.openWater + r.advanced + r.rescue + r.divemaster + r.instructor;
-    return [...m.values()].sort((a, b) => sum(b) - sum(a));
-  }, [isLiveData, liveFiltered]);
+    const sum = (row: NatLevelRow) =>
+      (row.intro ?? 0) +
+      row.openWater +
+      row.advanced +
+      row.rescue +
+      row.divemaster +
+      row.instructor +
+      (row.unknown ?? 0);
+    return [...rows.values()].sort((a, b) => sum(b) - sum(a));
+  }, [m, isDemo, marketFilter]);
 
-  const funnelData = useMemo(() => {
-    if (!isLiveData) return levelFunnel;
-    const counts = new Map<string, number>();
-    for (const t of liveFiltered) {
-      const lvl = normalizeLevel(t.level);
-      if (!lvl) continue;
-      counts.set(lvl, (counts.get(lvl) ?? 0) + 1);
+  const nationalities = useMemo(
+    () =>
+      m
+        ? filteredNationalities.filter((row) => row.name !== "Unknown").length
+        : isDemo
+          ? nationality.length
+          : 0,
+    [m, isDemo, filteredNationalities],
+  );
+
+  const topLevel = m
+    ? [...filteredLevels].sort((a, b) => b.count - a.count)[0]?.name ?? "Unknown"
+    : "Open Water";
+
+  const total = m
+    ? marketFilter === "all"
+      ? m.totals.all
+      : marketFilter === "domestic"
+        ? m.totals.domestic
+        : m.totals.international
+    : (nationalityByLevel as NatLevelRow[]).reduce(
+        (sum, row) =>
+          sum +
+          (row.intro ?? 0) +
+          row.openWater +
+          row.advanced +
+          row.rescue +
+          row.divemaster +
+          row.instructor,
+        0,
+      );
+  const prevTotal = m
+    ? marketFilter === "all"
+      ? m.totals.prevAll
+      : marketFilter === "domestic"
+        ? m.totals.prevDomestic
+        : m.totals.prevInternational
+    : 0;
+  const totalDelta = total - prevTotal;
+  const avgDivers =
+    m && m.total > 0 ? Math.round(m.divers / m.total) : isDemo ? 2 : 0;
+
+  const filteredNatCounts = useMemo(() => {
+    if (m) {
+      return filteredNationalities.map((row) => ({
+        name: row.name,
+        count: row.count,
+      }));
     }
-    const max = Math.max(1, ...counts.values());
-    return LEVEL_ORDER.filter((l) => counts.has(l)).map((level) => {
-      const tourists = counts.get(level)!;
-      return { level, tourists, pct: Math.round((tourists / max) * 100) };
-    });
-  }, [isLiveData, liveFiltered]);
+    return nationality
+      .filter((row) => row.name !== "Other")
+      .map((row) => ({ name: row.name, count: row.value }));
+  }, [m, filteredNationalities]);
 
-  const filteredNationality = useMemo(() => {
-    if (marketFilter === "all") return nationalityData;
-    return nationalityData.filter((n) =>
-      marketFilter === "domestic"
-        ? DOMESTIC_NATIONALITIES.has(n.name)
-        : !DOMESTIC_NATIONALITIES.has(n.name),
-    );
-  }, [marketFilter, nationalityData]);
+  const topNationality = [...filteredNatCounts].sort(
+    (a, b) => b.count - a.count,
+  )[0];
+  const natCountTotal = filteredNatCounts.reduce(
+    (sum, row) => sum + row.count,
+    0,
+  );
+  const levelCountTotal = filteredLevels.reduce(
+    (sum, row) => sum + row.count,
+    0,
+  );
+  const topLevelCount =
+    [...filteredLevels].sort((a, b) => b.count - a.count)[0]?.count ?? 0;
 
-  const filteredNatByLevel = useMemo(() => {
-    if (marketFilter === "all") return natByLevelData;
-    return natByLevelData.filter((n) =>
-      marketFilter === "domestic"
-        ? DOMESTIC_NATIONALITIES.has(n.nationality)
-        : !DOMESTIC_NATIONALITIES.has(n.nationality),
-    );
-  }, [marketFilter, natByLevelData]);
+  const touristInsight = useMemo(
+    () =>
+      buildTouristInsight({
+        live: isLive,
+        tourists: total,
+        registrationsDelta: m ? totalDelta : 0,
+        nationalities,
+        topNationality: topNationality?.name ?? null,
+        topNationalityShare:
+          topNationality && natCountTotal > 0
+            ? (topNationality.count / natCountTotal) * 100
+            : 0,
+        topLevel,
+        topLevelShare:
+          levelCountTotal > 0 ? (topLevelCount / levelCountTotal) * 100 : 0,
+        expiringPasses: 0,
+        pendingApplications: 0,
+        seed: new Date().getDate(),
+      }),
+    [
+      isLive,
+      total,
+      m,
+      totalDelta,
+      nationalities,
+      topNationality,
+      natCountTotal,
+      topLevel,
+      levelCountTotal,
+      topLevelCount,
+    ],
+  );
 
   const filteredTopTourists = useMemo(() => {
     if (marketFilter === "all") return topTourists;
-    return topTourists.filter((t) =>
+    const domestic = new Set(["Philippines"]);
+    return topTourists.filter((tourist) =>
       marketFilter === "domestic"
-        ? DOMESTIC_NATIONALITIES.has(t.nationality)
-        : !DOMESTIC_NATIONALITIES.has(t.nationality),
+        ? domestic.has(tourist.nationality)
+        : !domestic.has(tourist.nationality),
     );
   }, [marketFilter]);
 
-  const stats = useMemo(() => {
-    const total = filteredNatByLevel.reduce(
-      (a, r) =>
-        a + r.openWater + r.advanced + r.rescue + r.divemaster + r.instructor,
-      0,
-    );
-    return {
-      total,
-      nationalities: filteredNationality.length,
-      avgDives: total > 0 ? Math.round(total / filteredNatByLevel.length) : 0,
-      mostCommon: "Open Water",
-    };
-  }, [filteredNationality, filteredNatByLevel]);
-
-  const totalTourists = isLiveData ? liveFiltered.length : stats.total;
   const selectedNatPieRow = natDrilldown
-    ? filteredNationality.find((n) => n.name === natDrilldown)
+    ? nationalityData.find((row) => row.name === natDrilldown)
     : null;
-
-  const selectedNat = natDrilldown
-    ? natByLevelData.find((n) => n.nationality === natDrilldown)
-    : null;
+  const selectedNat = useMemo<NatLevelRow | null>(() => {
+    if (!natDrilldown) return null;
+    const rows = natByLevelData.filter(
+      (row) =>
+        nationalityGroup(row.nationality, row.domestic) === natDrilldown,
+    );
+    if (rows.length === 0) return null;
+    return rows.reduce<NatLevelRow>(
+      (acc, row) => ({
+        ...acc,
+        intro: (acc.intro ?? 0) + (row.intro ?? 0),
+        openWater: acc.openWater + row.openWater,
+        advanced: acc.advanced + row.advanced,
+        rescue: acc.rescue + row.rescue,
+        divemaster: acc.divemaster + row.divemaster,
+        instructor: acc.instructor + row.instructor,
+        unknown: (acc.unknown ?? 0) + (row.unknown ?? 0),
+      }),
+      emptyNatLevelRow(natDrilldown, natDrilldown === "Filipino"),
+    );
+  }, [natDrilldown, natByLevelData]);
 
   const selectedLevel = levelDrilldown
-    ? filteredNatByLevel.map((n) => {
-        const key = LEVEL_KEY[levelDrilldown];
+    ? natByLevelData.map((row) => {
+        const key = LEVEL_KEY[normalizeLevel(levelDrilldown) ?? levelDrilldown];
         return {
-          nationality: n.nationality,
-          count: key ? (n as any)[key] : 0,
+          nationality: row.nationality,
+          count: key ? (row as unknown as Record<LevelKey, number>)[key] ?? 0 : 0,
         };
       })
     : [];
-
-  const levelTotal = selectedLevel.reduce((a, r) => a + r.count, 0);
-
-  // Facts for the floating insights widget. Derived from the same live values
-  // as the StatCards above — no extra queries.
-  const touristInsight = useMemo(() => {
-    const rows = liveRows ?? [];
-    const natCounts = new Map<string, number>();
-    const levelCounts = new Map<string, number>();
-    for (const t of rows) {
-      if (t.nationality)
-        natCounts.set(
-          t.nationality,
-          (natCounts.get(t.nationality) || 0) + 1
-        );
-      if (t.level) levelCounts.set(t.level, (levelCounts.get(t.level) || 0) + 1);
-    }
-    const topOf = (m: Map<string, number>) =>
-      [...m.entries()].sort((a, b) => b[1] - a[1])[0];
-    const topNat = topOf(natCounts);
-    const topLvl = topOf(levelCounts);
-    const natTotal = [...natCounts.values()].reduce((a, c) => a + c, 0);
-    const lvlTotal = [...levelCounts.values()].reduce((a, c) => a + c, 0);
-    const now = new Date();
-    now.setHours(0, 0, 0, 0);
-    const expiring = rows.filter((t) => {
-      if (t.status !== "Active" || !t.expires || t.expires === "—") return false;
-      const exp = new Date(t.expires + "T00:00:00");
-      if (Number.isNaN(exp.getTime())) return false;
-      const diff = (exp.getTime() - now.getTime()) / 86400000;
-      return diff > 0 && diff <= 30;
-    }).length;
-
-    return buildTouristInsight({
-      live: isLiveData,
-      tourists: rows.length,
-      registrationsDelta: liveBuckets[curMonth].count - liveBuckets[prevMonth].count,
-      nationalities: natCounts.size,
-      topNationality: topNat?.[0] ?? null,
-      topNationalityShare:
-        topNat && natTotal > 0 ? (topNat[1] / natTotal) * 100 : 0,
-      topLevel: topLvl?.[0] ?? null,
-      topLevelShare: topLvl && lvlTotal > 0 ? (topLvl[1] / lvlTotal) * 100 : 0,
-      expiringPasses: expiring,
-      pendingApplications: pendingAppCount,
-      seed: now.getDate(),
-    });
-  }, [
-    liveRows,
-    isLiveData,
-    liveBuckets,
-    curMonth,
-    prevMonth,
-    pendingAppCount,
-  ]);
+  const levelTotal = selectedLevel.reduce((sum, row) => sum + row.count, 0);
 
   return (
-    <div className="space-y-6">
-      <InsightWidget insight={touristInsight} label="Tourists" />
+    <AnalyticsState isLive={isLive} label="tourist" state={metrics}>
+      <div className="space-y-6">
+        <InsightWidget insight={touristInsight} label="Tourists" />
       <Reveal>
         <div className="flex items-center justify-between">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-4 flex-1">
             <StatCard
               icon={Users}
               label="Total Tourists"
-              value={
-                liveCards ? String(liveFiltered.length) : String(stats.total)
-              }
-              delta={liveCards ? liveCards.newTotal.label : "+47"}
-              up={liveCards ? liveCards.newTotal.up : true}
+              value={m || !isDemo ? (m ? total : "-") : total}
+              delta={m ? signed(totalDelta) : undefined}
+              deltaLabel="vs previous period"
+              up={totalDelta >= 0}
+              sample={isDemo}
             />
             <StatCard
               icon={Globe}
               label="Nationalities Represented"
-              value={
-                liveCards
-                  ? String(
-                      new Set(
-                        liveFiltered
-                          .map((t) => t.nationality)
-                          .filter((n): n is string => !!n)
-                      ).size
-                    )
-                  : String(stats.nationalities)
-              }
-              delta={liveCards ? `+${liveCards.newNats}` : "+2"}
+              value={m || !isDemo ? (m ? nationalities : "-") : nationalities}
+              delta={m?.newNationalities ? `+${m.newNationalities}` : undefined}
+              deltaLabel="first seen this period"
+              up
+              sample={isDemo}
             />
             <StatCard
               icon={TrendingUp}
-              label="Avg Dives / Tourist"
-              value={
-                liveCards ? String(liveCards.avg) : String(stats.avgDives)
-              }
-              delta={liveCards ? liveCards.avgDelta.label : "+3"}
-              up={liveCards ? liveCards.avgDelta.up : true}
+              label="Avg Divers / Tourist"
+              value={m || !isDemo ? (m ? avgDivers : "-") : avgDivers}
+              sample={isDemo}
             />
             <StatCard
               icon={Award}
               label="Most Common Level"
-              value={liveCards ? liveCards.mostCommon : stats.mostCommon}
-              delta=""
+              value={m || !isDemo ? (m ? topLevel : "-") : topLevel}
+              sample={isDemo}
             />
           </div>
         </div>
@@ -610,7 +636,7 @@ export function TouristAnalytics() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 items-stretch">
         <Reveal delay={80} className="h-full">
           <SectionCard title="Nationality Distribution" className="h-full flex flex-col">
-            {isEmptyChartData(filteredNationality) ? (
+            {isEmptyChartData(nationalityData) ? (
               <ChartEmptyState className="h-[240px]" />
             ) : (
               <div className="flex items-center gap-6 h-[240px]">
@@ -618,7 +644,7 @@ export function TouristAnalytics() {
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
                       <Pie
-                        data={filteredNationality}
+                        data={nationalityData}
                         cx="50%"
                         cy="50%"
                         innerRadius={50}
@@ -626,10 +652,10 @@ export function TouristAnalytics() {
                         paddingAngle={2}
                         dataKey="value"
                         onClick={(_, index) => {
-                          setNatDrilldown(filteredNationality[index].name);
+                          setNatDrilldown(nationalityData[index].name);
                         }}
                       >
-                        {filteredNationality.map((_, i) => (
+                        {nationalityData.map((_, i) => (
                           <Cell
                             key={i}
                             fill={CHART_COLORS[i % CHART_COLORS.length]}
@@ -638,47 +664,29 @@ export function TouristAnalytics() {
                       </Pie>
                       <Tooltip
                         formatter={(value: number) => [`${value}%`, "Share"]}
-                        contentStyle={{
-                          borderRadius: "8px",
-                          border: "1px solid var(--border)",
-                          background: "var(--background)",
-                          fontSize: "12px",
-                        }}
+                        contentStyle={chartTooltipStyle}
                       />
                     </PieChart>
                   </ResponsiveContainer>
                 </div>
                 <div className="flex-1 space-y-2">
-                  {filteredNationality.map((n, i) => {
-                    const natTotal = filteredNationality.reduce(
-                      (a, x) => a + x.value,
-                      0,
-                    );
-                    return (
-                      <button
-                        key={n.name}
-                        onClick={() => setNatDrilldown(n.name)}
-                        className="flex items-center gap-2 w-full text-left text-sm rounded-md px-2 py-1.5 hover:bg-muted/60 transition-colors"
-                      >
-                        <div
-                          className="size-3 rounded-sm shrink-0"
-                          style={{
-                            background: CHART_COLORS[i % CHART_COLORS.length],
-                          }}
-                        />
-                        <span className="flex-1">{n.name}</span>
-                        <span className="text-muted-foreground">
-                          {n.value}%
-                        </span>
-                        <span className="text-muted-foreground text-xs">
-                          (
-                          {n.count ??
-                            Math.round((n.value / natTotal) * totalTourists)}
-                          )
-                        </span>
-                      </button>
-                    );
-                  })}
+                  {nationalityData.map((row, i) => (
+                    <button
+                      key={row.name}
+                      onClick={() => setNatDrilldown(row.name)}
+                      className="flex items-center gap-2 w-full text-left text-sm rounded-md px-2 py-1.5 hover:bg-muted/60 transition-colors"
+                    >
+                      <div
+                        className="size-3 rounded-sm shrink-0"
+                        style={{ background: CHART_COLORS[i % CHART_COLORS.length] }}
+                      />
+                      <span className="flex-1">{row.name}</span>
+                      <span className="text-muted-foreground">{row.value}%</span>
+                      <span className="text-muted-foreground text-xs">
+                        ({row.count ?? 0})
+                      </span>
+                    </button>
+                  ))}
                 </div>
               </div>
             )}
@@ -687,59 +695,71 @@ export function TouristAnalytics() {
 
         <Reveal delay={120} className="h-full">
           <SectionCard title="Dive Level Distribution" className="h-full flex flex-col">
-            {isEmptyChartData(radialData) ? (
+            {isEmptyChartData(levelData) ? (
               <ChartEmptyState className="h-[240px]" />
             ) : (
-            <div
-              className="h-[240px] cursor-pointer"
-              onClick={() => setLevelDrilldown("Open Water")}
-            >
-              <ResponsiveContainer width="100%" height="100%">
-                <RadialBarChart
-                  cx="50%"
-                  cy="50%"
-                  innerRadius="20%"
-                  outerRadius="90%"
-                  data={radialData}
-                  startAngle={180}
-                  endAngle={0}
-                >
-                  <RadialBar
-                    background
-                    dataKey="value"
-                    cornerRadius={4}
-                    onClick={(data: any) => {
-                      if (data?.name) setLevelDrilldown(data.name);
-                    }}
-                  />
-                  <Tooltip
-                    formatter={(value: number) => [`${value}%`, "Share"]}
-                    contentStyle={{
-                      borderRadius: "8px",
-                      border: "1px solid var(--border)",
-                      background: "var(--background)",
-                      fontSize: "12px",
-                    }}
-                  />
-                </RadialBarChart>
-              </ResponsiveContainer>
-            </div>
+              <div className="h-[240px]">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart
+                    data={levelData}
+                    layout="vertical"
+                    margin={{ top: 4, right: 24, left: 4, bottom: 4 }}
+                  >
+                    <CartesianGrid
+                      strokeDasharray="3 3"
+                      stroke="var(--border)"
+                      horizontal={false}
+                    />
+                    <XAxis
+                      type="number"
+                      domain={[0, 100]}
+                      tickFormatter={(value: number) => `${value}%`}
+                      {...chartAxisProps}
+                    />
+                    <YAxis
+                      dataKey="name"
+                      type="category"
+                      width={88}
+                      {...chartAxisProps}
+                    />
+                    <Tooltip
+                      formatter={(value: number) => [`${value}%`, "Share"]}
+                      contentStyle={chartTooltipStyle}
+                    />
+                    <Bar
+                      dataKey="value"
+                      name="Share"
+                      radius={[0, 6, 6, 0]}
+                      barSize={20}
+                      onClick={(data: NatDatum) => {
+                        if (data?.name) setLevelDrilldown(data.name);
+                      }}
+                    >
+                      {levelData.map((row, i) => (
+                        <Cell
+                          key={row.name}
+                          fill={CHART_COLORS[i % CHART_COLORS.length]}
+                          className="cursor-pointer"
+                        />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
             )}
             <div className="flex flex-wrap gap-3 mt-2">
-              {levelData.map((d, i) => (
+              {levelData.map((row, i) => (
                 <button
-                  key={d.name}
-                  onClick={() => setLevelDrilldown(d.name)}
+                  key={row.name}
+                  onClick={() => setLevelDrilldown(row.name)}
                   className="flex items-center gap-1.5 text-xs rounded-full px-2.5 py-1 hover:bg-muted/60 transition-colors"
                 >
                   <div
                     className="size-2 rounded-full"
-                    style={{
-                      background: CHART_COLORS[i % CHART_COLORS.length],
-                    }}
+                    style={{ background: CHART_COLORS[i % CHART_COLORS.length] }}
                   />
-                  <span>{d.name}</span>
-                  <span className="text-muted-foreground">{d.value}%</span>
+                  <span>{row.name}</span>
+                  <span className="text-muted-foreground">{row.value}%</span>
                 </button>
               ))}
             </div>
@@ -748,351 +768,106 @@ export function TouristAnalytics() {
       </div>
 
       <Reveal delay={160}>
-        <SectionCard title="Monthly Registration Trends">
+        <SectionCard title="Registration Trends">
           {isEmptyChartData(monthlyData) ? (
             <ChartEmptyState className="h-[260px]" />
           ) : (
-          <div className="h-[260px]">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart
-                data={monthlyData}
-                margin={{ top: 4, right: 4, left: -12, bottom: 0 }}
-              >
-                <CartesianGrid
-                  strokeDasharray="3 3"
-                  stroke="var(--border)"
-                  vertical={false}
-                />
-                <XAxis
-                  dataKey="m"
-                  tick={{ fontSize: 11 }}
-                  tickLine={false}
-                  axisLine={false}
-                />
-                <YAxis
-                  tick={{ fontSize: 11 }}
-                  tickLine={false}
-                  axisLine={false}
-                />
-                <Tooltip
-                  contentStyle={{
-                    borderRadius: "8px",
-                    border: "1px solid var(--border)",
-                    background: "var(--background)",
-                    fontSize: "12px",
-                  }}
-                />
-                <Bar
-                  dataKey="count"
-                  fill="var(--color-chart-1)"
-                  radius={[4, 4, 0, 0]}
-                />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
+            <div className="h-[260px]">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart
+                  data={monthlyData}
+                  margin={{ top: 4, right: 4, left: -12, bottom: 0 }}
+                >
+                  <CartesianGrid
+                    strokeDasharray="3 3"
+                    stroke="var(--border)"
+                    vertical={false}
+                  />
+                  <XAxis dataKey="m" {...chartAxisProps} />
+                  <YAxis {...chartAxisProps} />
+                  <Tooltip
+                    contentStyle={chartTooltipStyle}
+                  />
+                  <Bar
+                    dataKey="count"
+                    fill="var(--color-chart-1)"
+                    radius={[4, 4, 0, 0]}
+                  />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
           )}
         </SectionCard>
       </Reveal>
 
-      <Reveal delay={200}>
-        <SectionCard title="Nationality × Dive Level Cross-Tab">
-          <div className="overflow-x-auto">
+      {isDemo && (
+        <Reveal delay={240}>
+          <SectionCard title="Top Tourists Leaderboard" sample>
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-12">#</TableHead>
+                  <TableHead>Name</TableHead>
                   <TableHead>Nationality</TableHead>
-                  <TableHead className="text-center">Open Water</TableHead>
-                  <TableHead className="text-center">Advanced</TableHead>
-                  <TableHead className="text-center">Rescue</TableHead>
-                  <TableHead className="text-center">Divemaster</TableHead>
-                  <TableHead className="text-center">Instructor</TableHead>
-                  <TableHead className="text-right">Total</TableHead>
+                  <TableHead className="text-right">Dives</TableHead>
+                  <TableHead className="text-right">Level</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredNatByLevel.length === 0 ? (
+                {filteredTopTourists.length === 0 ? (
                   <TableRow>
                     <TableCell
-                      colSpan={7}
+                      colSpan={5}
                       className="text-center py-8 text-muted-foreground"
                     >
                       No data matches the selected filter.
                     </TableCell>
                   </TableRow>
                 ) : (
-                  filteredNatByLevel.map((row) => {
-                    const total =
-                      row.openWater +
-                      row.advanced +
-                      row.rescue +
-                      row.divemaster +
-                      row.instructor;
-                    return (
-                      <TableRow key={row.nationality}>
-                        <TableCell className="font-medium">
-                          {row.nationality}
-                        </TableCell>
-                        <TableCell className="text-center">
-                          {row.openWater}
-                        </TableCell>
-                        <TableCell className="text-center">
-                          {row.advanced}
-                        </TableCell>
-                        <TableCell className="text-center">
-                          {row.rescue}
-                        </TableCell>
-                        <TableCell className="text-center">
-                          {row.divemaster}
-                        </TableCell>
-                        <TableCell className="text-center">
-                          {row.instructor}
-                        </TableCell>
-                        <TableCell className="text-right font-semibold">
-                          {total}
-                        </TableCell>
-                      </TableRow>
-                    );
-                  })
+                  filteredTopTourists.map((tourist, i) => (
+                    <TableRow key={tourist.name}>
+                      <TableCell className="font-display font-bold text-muted-foreground">
+                        {i + 1}
+                      </TableCell>
+                      <TableCell className="font-medium">{tourist.name}</TableCell>
+                      <TableCell>
+                        <Badge variant="secondary" className="gap-1">
+                          <Globe className="size-3" />
+                          {tourist.nationality}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-right font-semibold">
+                        {tourist.dives}
+                      </TableCell>
+                      <TableCell className="text-right">
+                        <Badge variant="outline">{tourist.level}</Badge>
+                      </TableCell>
+                    </TableRow>
+                  ))
                 )}
               </TableBody>
             </Table>
-          </div>
-        </SectionCard>
-      </Reveal>
-
-      <Reveal delay={240}>
-        <SectionCard title="Top Tourists Leaderboard">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="w-12">#</TableHead>
-                <TableHead>Name</TableHead>
-                <TableHead>Nationality</TableHead>
-                <TableHead className="text-right">Dives</TableHead>
-                <TableHead className="text-right">Level</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {filteredTopTourists.length === 0 ? (
-                <TableRow>
-                  <TableCell
-                    colSpan={5}
-                    className="text-center py-8 text-muted-foreground"
-                  >
-                    No data matches the selected filter.
-                  </TableCell>
-                </TableRow>
-              ) : (
-                filteredTopTourists.map((t, i) => (
-                  <TableRow key={t.name}>
-                    <TableCell className="font-display font-bold text-muted-foreground">
-                      {i + 1}
-                    </TableCell>
-                    <TableCell className="font-medium">{t.name}</TableCell>
-                    <TableCell>
-                      <Badge variant="secondary" className="gap-1">
-                        <Globe className="size-3" />
-                        {t.nationality}
-                      </Badge>
-                    </TableCell>
-                    <TableCell className="text-right font-semibold">
-                      {t.dives}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <Badge variant="outline">{t.level}</Badge>
-                    </TableCell>
-                  </TableRow>
-                ))
-              )}
-            </TableBody>
-          </Table>
-        </SectionCard>
-      </Reveal>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <Reveal delay={280}>
-          <SectionCard title="Revenue Potential by Nationality">
-            {isEmptyChartData(revenuePerNationality) ? (
-              <ChartEmptyState className="h-[260px]" />
-            ) : (
-            <div className="h-[260px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart
-                  data={revenuePerNationality}
-                  margin={{ top: 4, right: 4, left: -12, bottom: 0 }}
-                >
-                  <defs>
-                    <linearGradient id="revenueGrad" x1="0" y1="0" x2="0" y2="1">
-                      <stop offset="0%" stopColor="var(--color-chart-1)" stopOpacity={0.9} />
-                      <stop offset="100%" stopColor="var(--color-chart-3)" stopOpacity={0.9} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid
-                    strokeDasharray="3 3"
-                    stroke="var(--border)"
-                    vertical={false}
-                  />
-                  <XAxis
-                    dataKey="nationality"
-                    tick={{ fontSize: 11 }}
-                    tickLine={false}
-                    axisLine={false}
-                  />
-                  <YAxis
-                    tick={{ fontSize: 11 }}
-                    tickLine={false}
-                    axisLine={false}
-                    tickFormatter={(v) => `$${(v / 1000).toFixed(0)}k`}
-                  />
-                  <Tooltip
-                    formatter={(value: number, name: string) => {
-                      if (name === "revenue") return [`$${value.toLocaleString()}`, "Total Revenue"];
-                      return [value, name];
-                    }}
-                    labelFormatter={(label) => `Nationality: ${label}`}
-                    contentStyle={{
-                      borderRadius: "8px",
-                      border: "1px solid var(--border)",
-                      background: "var(--background)",
-                      fontSize: "12px",
-                    }}
-                    itemStyle={{ textTransform: "capitalize" }}
-                  />
-                  <Bar
-                    dataKey="revenue"
-                    fill="url(#revenueGrad)"
-                    radius={[4, 4, 0, 0]}
-                  />
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-            )}
-            <div className="flex flex-wrap gap-3 mt-2">
-              {revenuePerNationality.map((r) => (
-                <div key={r.nationality} className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <span className="font-medium text-foreground">{r.nationality}</span>
-                  <span>${r.avgSpend}/tourist</span>
-                </div>
-              ))}
-            </div>
           </SectionCard>
         </Reveal>
-
-        <Reveal delay={320}>
-          <SectionCard title="Dive Certification Funnel">
-            {isEmptyChartData(funnelData) ? (
-              <ChartEmptyState className="h-[260px]" />
-            ) : (
-            <div className="h-[260px]">
-              <ResponsiveContainer width="100%" height="100%">
-                <BarChart
-                  data={funnelData}
-                  layout="vertical"
-                  margin={{ top: 4, right: 40, left: 12, bottom: 0 }}
-                >
-                  <defs>
-                    <linearGradient id="funnelGrad0" x1="0" y1="0" x2="1" y2="0">
-                      <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.9} />
-                      <stop offset="100%" stopColor="#60a5fa" stopOpacity={0.9} />
-                    </linearGradient>
-                    <linearGradient id="funnelGrad1" x1="0" y1="0" x2="1" y2="0">
-                      <stop offset="0%" stopColor="#3b82f6" stopOpacity={0.8} />
-                      <stop offset="100%" stopColor="#34d399" stopOpacity={0.8} />
-                    </linearGradient>
-                    <linearGradient id="funnelGrad2" x1="0" y1="0" x2="1" y2="0">
-                      <stop offset="0%" stopColor="#22d3ee" stopOpacity={0.8} />
-                      <stop offset="100%" stopColor="#34d399" stopOpacity={0.8} />
-                    </linearGradient>
-                    <linearGradient id="funnelGrad3" x1="0" y1="0" x2="1" y2="0">
-                      <stop offset="0%" stopColor="#10b981" stopOpacity={0.8} />
-                      <stop offset="100%" stopColor="#6ee7b7" stopOpacity={0.8} />
-                    </linearGradient>
-                    <linearGradient id="funnelGrad4" x1="0" y1="0" x2="1" y2="0">
-                      <stop offset="0%" stopColor="#059669" stopOpacity={0.9} />
-                      <stop offset="100%" stopColor="#34d399" stopOpacity={0.9} />
-                    </linearGradient>
-                    <linearGradient id="funnelGrad5" x1="0" y1="0" x2="1" y2="0">
-                      <stop offset="0%" stopColor="#047857" stopOpacity={0.9} />
-                      <stop offset="100%" stopColor="#10b981" stopOpacity={0.9} />
-                    </linearGradient>
-                  </defs>
-                  <CartesianGrid
-                    strokeDasharray="3 3"
-                    stroke="var(--border)"
-                    horizontal={false}
-                  />
-                  <XAxis
-                    type="number"
-                    tick={{ fontSize: 11 }}
-                    tickLine={false}
-                    axisLine={false}
-                  />
-                  <YAxis
-                    type="category"
-                    dataKey="level"
-                    tick={{ fontSize: 11 }}
-                    tickLine={false}
-                    axisLine={false}
-                    width={90}
-                  />
-                  <Tooltip
-                    formatter={(value: number) => [`${value} tourists`, "Count"]}
-                    contentStyle={{
-                      borderRadius: "8px",
-                      border: "1px solid var(--border)",
-                      background: "var(--background)",
-                      fontSize: "12px",
-                    }}
-                  />
-                  <Bar
-                    dataKey="tourists"
-                    radius={[0, 4, 4, 0]}
-                    label={{ position: "right", fontSize: 11, fill: "var(--muted-foreground)", formatter: (v: number) => `${v}` }}
-                  >
-                    {funnelData.map((_, i) => (
-                      <Cell
-                        key={i}
-                        fill={`url(#funnelGrad${i})`}
-                      />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            </div>
-            )}
-            <div className="flex flex-wrap gap-3 mt-2">
-              {funnelData.map((l, i) => (
-                <div key={l.level} className="flex items-center gap-1.5 text-xs">
-                  <div
-                    className="size-2 rounded-full"
-                    style={{
-                      background: CHART_COLORS[i % CHART_COLORS.length],
-                    }}
-                  />
-                  <span className="font-medium">{l.level}</span>
-                  <span className="text-muted-foreground">{l.pct}%</span>
-                </div>
-              ))}
-            </div>
-          </SectionCard>
-        </Reveal>
-      </div>
+      )}
 
       <DrilldownDialog
         open={!!natDrilldown}
         onOpenChange={() => setNatDrilldown(null)}
-        title={`${natDrilldown ?? ""} — Tourist Breakdown`}
-        subtitle={`Detailed dive level distribution for tourists from ${natDrilldown}`}
+        title={`${natDrilldown ?? ""} - Tourist Breakdown`}
+        subtitle={
+          natDrilldown === "Filipino"
+            ? "Dive level distribution for Filipino tourists"
+            : natDrilldown === "Foreign"
+              ? "Dive level distribution for foreign tourists"
+              : "Dive level distribution for tourists with unknown nationality"
+        }
         stats={
           selectedNat
             ? [
                 {
                   label: "Total Tourists",
-                  value:
-                    selectedNatPieRow?.count ??
-                    Math.round(
-                      ((selectedNatPieRow?.value ?? 0) / 100) * totalTourists,
-                    ),
+                  value: selectedNatPieRow?.count ?? 0,
                   icon: Users,
                 },
                 {
@@ -1121,25 +896,32 @@ export function TouristAnalytics() {
             <TableBody>
               {(
                 [
+                  ["Intro", selectedNat.intro ?? 0],
                   ["Open Water", selectedNat.openWater],
                   ["Advanced", selectedNat.advanced],
                   ["Rescue", selectedNat.rescue],
                   ["Divemaster", selectedNat.divemaster],
                   ["Instructor", selectedNat.instructor],
+                  ["Unknown", selectedNat.unknown ?? 0],
                 ] as const
               ).map(([label, count]) => {
-                const total =
+                const selectedTotal =
+                  (selectedNat.intro ?? 0) +
                   selectedNat.openWater +
                   selectedNat.advanced +
                   selectedNat.rescue +
                   selectedNat.divemaster +
-                  selectedNat.instructor;
+                  selectedNat.instructor +
+                  (selectedNat.unknown ?? 0);
                 return (
                   <TableRow key={label}>
                     <TableCell className="font-medium">{label}</TableCell>
                     <TableCell className="text-right">{count}</TableCell>
                     <TableCell className="text-right text-muted-foreground">
-                      {Math.round((count / total) * 100)}%
+                      {selectedTotal > 0
+                        ? Math.round((count / selectedTotal) * 100)
+                        : 0}
+                      %
                     </TableCell>
                   </TableRow>
                 );
@@ -1152,7 +934,7 @@ export function TouristAnalytics() {
       <DrilldownDialog
         open={!!levelDrilldown}
         onOpenChange={() => setLevelDrilldown(null)}
-        title={`${levelDrilldown ?? ""} — Nationality Breakdown`}
+        title={`${levelDrilldown ?? ""} - Nationality Breakdown`}
         subtitle={`Distribution of ${levelDrilldown} certified tourists across nationalities`}
         stats={
           selectedLevel.length > 0
@@ -1161,8 +943,8 @@ export function TouristAnalytics() {
                 {
                   label: "Top Nationality",
                   value:
-                    selectedLevel.sort((a, b) => b.count - a.count)[0]
-                      ?.nationality ?? "—",
+                    [...selectedLevel].sort((a, b) => b.count - a.count)[0]
+                      ?.nationality ?? "-",
                   icon: Globe,
                 },
               ]
@@ -1181,15 +963,10 @@ export function TouristAnalytics() {
             <TableBody>
               {selectedLevel.map((row) => (
                 <TableRow key={row.nationality}>
-                  <TableCell className="font-medium">
-                    {row.nationality}
-                  </TableCell>
+                  <TableCell className="font-medium">{row.nationality}</TableCell>
                   <TableCell className="text-right">{row.count}</TableCell>
                   <TableCell className="text-right text-muted-foreground">
-                    {levelTotal > 0
-                      ? Math.round((row.count / levelTotal) * 100)
-                      : 0}
-                    %
+                    {levelTotal > 0 ? Math.round((row.count / levelTotal) * 100) : 0}%
                   </TableCell>
                 </TableRow>
               ))}
@@ -1197,6 +974,7 @@ export function TouristAnalytics() {
           </Table>
         )}
       </DrilldownDialog>
-    </div>
+      </div>
+    </AnalyticsState>
   );
 }

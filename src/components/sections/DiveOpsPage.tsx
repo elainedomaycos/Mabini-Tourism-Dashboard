@@ -49,23 +49,51 @@ export function DiveOpsPage() {
           <StatCard
             icon={Waves}
             label="Active Dives"
-            value={isLiveData ? String(todayCount) : "4"}
-            delta={isLiveData ? `${dayDiff >= 0 ? "+" : ""}${dayDiff}` : "+1"}
+            value={
+              isLive && liveManifests.isPending
+                ? "—"
+                : isLiveData
+                  ? String(todayCount)
+                  : "4"
+            }
+            delta={
+              isLive && liveManifests.isPending
+                ? ""
+                : isLiveData
+                  ? `${dayDiff >= 0 ? "+" : ""}${dayDiff}`
+                  : "+1"
+            }
             up={isLiveData ? dayDiff >= 0 : true}
           />
           <StatCard
             icon={ScrollText}
             label="Manifestos This Month"
-            value={isLiveData ? String(mBuckets[cur]?.count ?? 0) : "25"}
+            value={
+              isLive && liveManifests.isPending
+                ? "—"
+                : isLiveData
+                  ? String(mBuckets[cur]?.count ?? 0)
+                  : "25"
+            }
             delta={
-              isLiveData ? `${monthDiff >= 0 ? "+" : ""}${monthDiff}` : "+3"
+              isLive && liveManifests.isPending
+                ? ""
+                : isLiveData
+                  ? `${monthDiff >= 0 ? "+" : ""}${monthDiff}`
+                  : "+3"
             }
             up={isLiveData ? monthDiff >= 0 : true}
           />
           <StatCard
             icon={MapPin}
             label="Dive Sites"
-            value={siteCountLive ? String(siteCount) : "10"}
+            value={
+              isLive && liveSites.isPending
+                ? "—"
+                : siteCountLive
+                  ? String(siteCount)
+                  : "10"
+            }
             delta=""
           />
         </div>
