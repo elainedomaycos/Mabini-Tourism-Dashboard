@@ -1,14 +1,41 @@
-import { useState, useEffect, useRef, type ReactNode } from "react";
+import {
+  useState,
+  useEffect,
+  useRef,
+  type CSSProperties,
+  type ReactNode,
+} from "react";
 import { motion, useInView, AnimatePresence } from "framer-motion";
-import { ArrowUpRight, ArrowDownRight, X } from "lucide-react";
+import { ArrowUpRight, ArrowDownRight, X, type LucideIcon } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import {
+  TableCell,
+  TableRow,
+} from "@/components/ui/table";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+
+export const chartTooltipStyle: CSSProperties = {
+  background: "var(--color-card)",
+  border: "1px solid var(--color-border)",
+  borderRadius: 12,
+  color: "var(--color-foreground)",
+  fontSize: 12,
+  boxShadow: "0 10px 30px rgb(0 0 0 / 0.12)",
+};
+
+export const chartAxisProps = {
+  stroke: "var(--color-muted-foreground)",
+  fontSize: 12,
+  tickLine: false,
+  axisLine: false,
+};
 
 export function useMounted() {
   const [m, setM] = useState(false);
@@ -43,16 +70,23 @@ export function CountUp({
   value: string;
   className?: string;
 }) {
-  const m = value.match(/[\d,]+/);
+  // Capture decimals so "4.9" does not animate down to "5" mid-flight.
+  const m = value.match(/[\d,]+(?:\.\d+)?/);
   const num = m ? Number(m[0].replace(/,/g, "")) : NaN;
   const prefix = m ? value.slice(0, m.index) : "";
   const suffix = m ? value.slice((m.index ?? 0) + m[0].length) : "";
-  const { ref, val } = useCountUp(Number.isNaN(num) ? 0 : num);
+  const decimals = m?.[0].includes(".") ? m[0].split(".")[1].length : 0;
+  const factor = 10 ** decimals;
+  const { ref, val } = useCountUp(
+    Number.isNaN(num) ? 0 : Math.round(num * factor),
+  );
   if (Number.isNaN(num)) return <span className={className}>{value}</span>;
   return (
     <span ref={ref} className={className}>
       {prefix}
-      {val.toLocaleString()}
+      {decimals > 0
+        ? (val / factor).toFixed(decimals)
+        : val.toLocaleString()}
       {suffix}
     </span>
   );
@@ -100,16 +134,39 @@ export function PageTransition({
   );
 }
 
-export function StatCard({ icon: Icon, label, value, delta, up = true }: any) {
+export function StatCard({
+  icon: Icon,
+  label,
+  value,
+  delta,
+  /** Period the delta compares against — never assume "last month". */
+  deltaLabel = "vs previous period",
+  up = true,
+  sample = false,
+}: {
+  icon: LucideIcon;
+  label: string;
+  value: string | number;
+  delta?: string;
+  deltaLabel?: string;
+  up?: boolean;
+  /** Mark a demo-only figure so connected deployments cannot imply it is real. */
+  sample?: boolean;
+}) {
   return (
     <Card className="p-5 shadow-elegant border-border/60 hover:border-primary/30 hover:shadow-glow-sm transition-all hover-lift h-full flex flex-col">
       <div className="flex items-start justify-between">
         <div>
-          <div className="text-xs uppercase tracking-wider text-muted-foreground">
+          <div className="flex items-center gap-1.5 text-xs uppercase tracking-wider text-muted-foreground">
             {label}
+            {sample && (
+              <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-1.5 py-0.5 text-[9px] font-semibold normal-case tracking-normal text-amber-700 dark:text-amber-400">
+                Sample
+              </span>
+            )}
           </div>
           <div className="mt-2 text-3xl font-display font-bold tracking-tight">
-            <CountUp value={value} />
+            <CountUp value={String(value)} />
           </div>
         </div>
         <div className="size-10 rounded-xl bg-primary-soft text-primary flex items-center justify-center">
@@ -132,7 +189,7 @@ export function StatCard({ icon: Icon, label, value, delta, up = true }: any) {
             )}
             {delta}
           </span>
-          <span className="text-muted-foreground">vs last month</span>
+          <span className="text-muted-foreground">{deltaLabel}</span>
         </div>
       ) : (
         <div className="mt-3 h-[22px]" aria-hidden />
@@ -141,11 +198,83 @@ export function StatCard({ icon: Icon, label, value, delta, up = true }: any) {
   );
 }
 
-export function SectionCard({ title, action, children, className = "" }: any) {
+export function TableSkeletonRows({
+  rows = 5,
+  cols,
+}: {
+  rows?: number;
+  cols: number;
+}) {
+  return (
+    <>
+      {Array.from({ length: rows }).map((_, row) => (
+        <TableRow key={row}>
+          {Array.from({ length: cols }).map((_, col) => (
+            <TableCell key={col} className="py-3">
+              <Skeleton className="h-5 w-full" />
+            </TableCell>
+          ))}
+        </TableRow>
+      ))}
+    </>
+  );
+}
+
+export function CardGridSkeleton({ count = 3 }: { count?: number }) {
+  return (
+    <>
+      {Array.from({ length: count }).map((_, i) => (
+        <Card
+          key={i}
+          className="p-0 overflow-hidden shadow-elegant border-border/60"
+        >
+          <Skeleton className="aspect-[4/3] rounded-none" />
+          <div className="p-3 space-y-2">
+            <Skeleton className="h-4 w-3/4" />
+            <Skeleton className="h-3 w-1/3" />
+            <div className="flex gap-1.5 pt-1">
+              <Skeleton className="h-8 flex-1" />
+              <Skeleton className="h-8 flex-1" />
+            </div>
+          </div>
+        </Card>
+      ))}
+    </>
+  );
+}
+
+export function SectionCard({
+  title,
+  subtitle,
+  action,
+  sample = false,
+  children,
+  className = "",
+}: {
+  title: ReactNode;
+  subtitle?: string;
+  action?: ReactNode;
+  /** Panel is rendered from demo fixtures, not the live database. */
+  sample?: boolean;
+  children?: ReactNode;
+  className?: string;
+}) {
   return (
     <Card className={`p-5 shadow-elegant border-border/60 ${className}`}>
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="font-display font-semibold">{title}</h3>
+      <div className="flex items-start justify-between gap-3 mb-4">
+        <div>
+          <div className="flex items-center gap-2">
+            <h3 className="font-display font-semibold">{title}</h3>
+            {sample && (
+              <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-amber-700 dark:text-amber-400">
+                Sample data
+              </span>
+            )}
+          </div>
+          {subtitle && (
+            <p className="mt-0.5 text-xs text-muted-foreground">{subtitle}</p>
+          )}
+        </div>
         {action}
       </div>
       {children}
@@ -257,7 +386,7 @@ export function DrilldownDialog({
   onOpenChange: (o: boolean) => void;
   title: string;
   subtitle?: string;
-  stats?: { label: string; value: string | number; icon?: any }[];
+  stats?: { label: string; value: string | number; icon?: LucideIcon }[];
   children?: React.ReactNode;
 }) {
   return (

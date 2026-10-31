@@ -12,7 +12,7 @@ import {
   Suspense,
   type ReactNode,
 } from "react";
-import { motion, AnimatePresence, useInView } from "framer-motion";
+import { motion, AnimatePresence } from "framer-motion";
 import { z } from "zod";
 import {
   Anchor,
@@ -48,11 +48,8 @@ import {
   CreditCard,
   UserCheck,
   ScrollText,
-  ArrowUpRight,
-  ArrowDownRight,
   Send,
   FileDown,
-  FileText,
   Image as ImageIcon,
   ImagePlus,
   Loader2,
@@ -92,8 +89,8 @@ import {
   PieChart,
   Pie,
   Cell,
-  LineChart,
   Line,
+  ComposedChart,
   RadialBarChart,
   RadialBar,
 } from "recharts";
@@ -177,6 +174,7 @@ import { resetStaffPassword } from "@/lib/reset-staff-password-fn";
 import { clearPasswordFlag } from "@/lib/clear-password-flag-fn";
 import {
   useLiveMode,
+  useLiveList,
   isLiveMode,
   useLiveRealtime,
   useOperatorApplicationsLive,
@@ -250,6 +248,25 @@ import { MABINI_BARANGAYS } from "@/lib/barangays";
 import { DIVE_DIFFICULTIES, DIVING_TYPES } from "@/lib/diveTaxonomy";
 import { buildOverviewInsight, buildOperatorInsight } from "@/lib/insights";
 import { AnalyticsPage } from "@/components/sections/AnalyticsPage";
+import { AnalyticsState, MetricsError } from "@/components/AnalyticsState";
+import {
+  CardGridSkeleton,
+  DrilldownDialog,
+  SectionCard,
+  StatCard,
+  TableSkeletonRows,
+  chartAxisProps,
+  chartTooltipStyle,
+} from "@/components/shared";
+import {
+  aggregateDaily,
+  displayNationality,
+  normalizeLevel,
+  topWithOther,
+  useMetrics,
+  useTouristSample,
+} from "@/lib/metrics";
+import { resolveDateRange, type DateRange } from "@/lib/period";
 
 /* ------------------------------ SEARCH PARAMS SCHEMA ------------------------------ */
 const searchSchema = z.object({
@@ -1266,37 +1283,18 @@ function useGlobalDateRange() {
   const range = search.globalDateRange;
   // Anchor to the real calendar month — a hardcoded month silently hides
   // rows registered in any other month under the default 30d range.
-  const curMonthIdx = new Date().getMonth();
-
-  let fromMonthIdx: number;
-  let toMonthIdx: number;
-  if (range === "today") {
-    fromMonthIdx = curMonthIdx;
-    toMonthIdx = curMonthIdx;
-  } else if (range === "7d") {
-    fromMonthIdx = Math.max(0, curMonthIdx - 1);
-    toMonthIdx = curMonthIdx;
-  } else if (range === "30d") {
-    fromMonthIdx = Math.max(0, curMonthIdx - 2);
-    toMonthIdx = curMonthIdx;
-  } else {
-    const fi = search.globalDateFrom
-      ? new Date(search.globalDateFrom).getMonth()
-      : 0;
-    const ti = search.globalDateTo
-      ? new Date(search.globalDateTo).getMonth()
-      : curMonthIdx;
-    fromMonthIdx = fi;
-    toMonthIdx = ti;
-  }
-
-  const visibleMonths = useMemo(
-    () => MONTHS.filter((_, i) => i >= fromMonthIdx && i <= toMonthIdx),
-    [fromMonthIdx, toMonthIdx],
+  const rangeData = useMemo(
+    () => resolveDateRange(range, search.globalDateFrom, search.globalDateTo),
+    [range, search.globalDateFrom, search.globalDateTo],
   );
-  const scale = useMemo(
-    () => (toMonthIdx - fromMonthIdx + 1) / 12,
-    [fromMonthIdx, toMonthIdx],
+
+  const inRange = useCallback(
+    (value: string | null | undefined) => {
+      const day = String(value ?? "").slice(0, 10);
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(day)) return true;
+      return day >= rangeData.from && day <= rangeData.to;
+    },
+    [rangeData.from, rangeData.to],
   );
   const setRange = useCallback(
     (r: string, from?: string, to?: string) => {
@@ -1311,10 +1309,13 @@ function useGlobalDateRange() {
 
   return {
     range,
-    visibleMonths,
-    scale,
-    fromMonthIdx,
-    toMonthIdx,
+    rangeData,
+    from: rangeData.from,
+    to: rangeData.to,
+    grain: rangeData.grain,
+    label: rangeData.label,
+    invalid: rangeData.invalid,
+    inRange,
     setRange,
     globalDateFrom: search.globalDateFrom,
     globalDateTo: search.globalDateTo,
@@ -1582,43 +1583,6 @@ function ClientOnlyDiveSiteHeatmap({
 // Sessions use Supabase default persistence (refresh-token rotation) —
 // no mock idle-timeout guard. Expiry is owned by Supabase Auth; a dead
 // session simply fails the next staff check and returns to login.
-
-function useCountUp(target: number, duration = 900) {
-  const ref = useRef<HTMLSpanElement>(null);
-  const inView = useInView(ref, { once: true, margin: "-40px" });
-  const [val, setVal] = useState(0);
-  useEffect(() => {
-    if (!inView) return;
-    let raf = 0;
-    const start = performance.now();
-    const tick = (now: number) => {
-      const p = Math.min(1, (now - start) / duration);
-      const eased = 1 - Math.pow(1 - p, 3);
-      setVal(Math.round(target * eased));
-      if (p < 1) raf = requestAnimationFrame(tick);
-    };
-    raf = requestAnimationFrame(tick);
-    return () => cancelAnimationFrame(raf);
-  }, [inView, target, duration]);
-  return { ref, val };
-}
-
-function CountUp({ value, className }: { value: string; className?: string }) {
-  const m = value.match(/[\d,]+/);
-  if (!m) return <span className={className}>{value}</span>;
-  const num = Number(m[0].replace(/,/g, ""));
-  if (Number.isNaN(num)) return <span className={className}>{value}</span>;
-  const prefix = value.slice(0, m.index);
-  const suffix = value.slice((m.index ?? 0) + m[0].length);
-  const { ref, val } = useCountUp(num);
-  return (
-    <span ref={ref} className={className}>
-      {prefix}
-      {val.toLocaleString()}
-      {suffix}
-    </span>
-  );
-}
 
 function PageTransition({
   section,
@@ -2283,7 +2247,7 @@ function DashboardShell({
 
         {/* Main */}
         <div className="flex-1 min-w-0">
-          <header className="h-16 sticky top-0 z-20 backdrop-blur bg-background/80 border-b border-border flex items-center gap-4 px-6">
+          <header className="h-16 sticky top-0 z-20 backdrop-blur bg-background/80 border-b border-border flex items-center gap-3 px-4 md:gap-4 md:px-6">
             <div>
               <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
                 <button
@@ -2327,8 +2291,8 @@ function DashboardShell({
                   onClick={() =>
                     dr.setRange(
                       "custom",
-                      dr.globalDateFrom || "2026-07-01",
-                      dr.globalDateTo || "2026-07-31",
+                      dr.globalDateFrom || dr.from,
+                      dr.globalDateTo || dr.to,
                     )
                   }
                   className={`px-2.5 py-1 text-xs rounded-md transition-all ${dr.range === "custom" ? "bg-background shadow-sm font-medium text-foreground" : "text-muted-foreground hover:text-foreground"}`}
@@ -2398,14 +2362,18 @@ function DashboardShell({
             </div>
           </header>
 
-          <main className="p-6 space-y-6">
+          <main className="p-4 pb-24 space-y-4 sm:p-6 sm:space-y-6">
             <PageTransition section={section}>
-              {section === "overview" && <Overview session={session} />}
+              {section === "overview" && (
+                <Overview session={session} range={dr.rangeData} />
+              )}
               {section === "tourists" && <TouristMgmt session={session} />}
               {section === "establishments" && <EstablishmentsPage />}
               {section === "dive-ops" && <DiveOpsPage />}
               {section === "dive-pass" && <DivePassPage />}
-              {section === "analytics" && <AnalyticsPage />}
+              {section === "analytics" && (
+                <AnalyticsPage range={dr.rangeData} />
+              )}
               {section === "announcements" && <Announcements />}
               {section === "settings" &&
                 (role === "superadmin" ? (
@@ -2566,7 +2534,11 @@ export function DataSourceBadge({
   }
   return (
     <span
-      title="Connected to Supabase — showing live data"
+      title={
+        isLoading
+          ? "Connected to Supabase — loading live data"
+          : "Connected to Supabase — showing live data"
+      }
       className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-400"
     >
       <span
@@ -2723,111 +2695,6 @@ function NotificationsBell() {
   );
 }
 
-/* ------------------------------ SHARED UI ------------------------------ */
-function DrilldownDialog({
-  open,
-  onOpenChange,
-  title,
-  subtitle,
-  stats,
-  children,
-}: {
-  open: boolean;
-  onOpenChange: (o: boolean) => void;
-  title: string;
-  subtitle?: string;
-  stats?: { label: string; value: string | number; icon?: any }[];
-  children?: React.ReactNode;
-}) {
-  return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-2xl max-h-[80vh] overflow-y-auto">
-        <DialogHeader>
-          <DialogTitle className="font-display text-lg">{title}</DialogTitle>
-          {subtitle && (
-            <p className="text-sm text-muted-foreground">{subtitle}</p>
-          )}
-        </DialogHeader>
-        {stats && stats.length > 0 && (
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
-            {stats.map((s) => (
-              <Card key={s.label} className="p-3 shadow-elegant">
-                <div className="flex items-center gap-2">
-                  {s.icon && (
-                    <div className="size-8 rounded-lg bg-primary-soft text-primary flex items-center justify-center">
-                      <s.icon className="size-4" />
-                    </div>
-                  )}
-                  <div>
-                    <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                      {s.label}
-                    </div>
-                    <div className="text-lg font-display font-bold">
-                      {s.value}
-                    </div>
-                  </div>
-                </div>
-              </Card>
-            ))}
-          </div>
-        )}
-        {children}
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function StatCard({ icon: Icon, label, value, delta, up = true }: any) {
-  return (
-    <Card className="p-5 shadow-elegant border-border/60 hover:border-primary/30 hover:shadow-glow-sm transition-all hover-lift">
-      <div className="flex items-start justify-between">
-        <div>
-          <div className="text-xs uppercase tracking-wider text-muted-foreground">
-            {label}
-          </div>
-          <div className="mt-2 text-3xl font-display font-bold tracking-tight">
-            <CountUp value={value} />
-          </div>
-        </div>
-        <div className="size-10 rounded-xl bg-primary-soft text-primary flex items-center justify-center">
-          <Icon className="size-5" />
-        </div>
-      </div>
-      {delta && (
-        <div className="mt-3 flex items-center gap-1 text-xs">
-          <span
-            className={`inline-flex items-center gap-0.5 rounded-full px-2 py-0.5 font-medium ${
-              up
-                ? "bg-success/10 text-success"
-                : "bg-destructive/10 text-destructive"
-            }`}
-          >
-            {up ? (
-              <ArrowUpRight className="size-3" />
-            ) : (
-              <ArrowDownRight className="size-3" />
-            )}
-            {delta}
-          </span>
-          <span className="text-muted-foreground">vs last month</span>
-        </div>
-      )}
-    </Card>
-  );
-}
-
-function SectionCard({ title, action, children, className = "" }: any) {
-  return (
-    <Card className={`p-5 shadow-elegant border-border/60 ${className}`}>
-      <div className="flex items-center justify-between mb-4">
-        <h3 className="font-display font-semibold">{title}</h3>
-        {action}
-      </div>
-      {children}
-    </Card>
-  );
-}
-
 function StatusBadge({ status }: { status: string }) {
   const map: Record<string, string> = {
     Active: "bg-success/10 text-success border-success/20",
@@ -2885,286 +2752,202 @@ function ActiveFilterBadges({
 }
 
 /* ------------------------------ OVERVIEW ------------------------------ */
-function Overview({ session }: { session?: StaffSession | null }) {
+function Overview({
+  session,
+  range,
+}: {
+  session?: StaffSession | null;
+  range: DateRange;
+}) {
   const { setFilters } = useFilters();
-  const { visibleMonths, scale } = useGlobalDateRange();
+  const isLive = useLiveMode();
+  const metrics = useMetrics("overview", range);
+  const m = metrics.data;
+  const ovError = isLive && metrics.isError;
+  const ovReady = !isLive || !!m;
+  const ovLive = isLive && !!m;
   const [drillMonth, setDrillMonth] = useState<any>(null);
   const [drillNationality, setDrillNationality] = useState<any>(null);
   const [drillSite, setDrillSite] = useState<any>(null);
   const [drillDiveType, setDrillDiveType] = useState<any>(null);
   const [drillLevel, setDrillLevel] = useState<any>(null);
+  const [trendMetric, setTrendMetric] = useState<"tourists" | "dives">(
+    "tourists",
+  );
 
-  // Live sources (React Query cache — mounting here costs no extra fetch).
-  // Tourist rows exclude the signed-in staffer, matching TouristMgmt.
-  const liveTouristsOv = useTouristsLive();
-  const liveAppsOv = useOperatorApplicationsLive();
-  const liveReceiptsOv = useReceiptsLive();
-  const liveManifestsOv = useManifestsLive();
-  const isLive = useLiveMode();
-  const liveSitesOv = useDiveSitesLive();
-  const ovLive = !!(
-    liveTouristsOv.data &&
-    liveAppsOv.data &&
-    liveReceiptsOv.data &&
-    liveManifestsOv.data
+  // Demo-only row sets keep the drilldown tables populated when Supabase is
+  // not configured. Live drilldowns come from to_tourist_sample below.
+  const ovApps = isLive ? [] : operatorApps;
+  const ovReceipts = isLive ? [] : receipts;
+  const ovManifests = isLive ? [] : manifestos;
+  const ovSites = useMemo(
+    () =>
+      m ? m.sites.map(toSiteView) : [],
+    [m],
   );
-  const ovSites = (liveSitesOv.data ?? []).map(toSiteView);
-  const ovSitesLive = isLive && !!liveSitesOv.data;
-  const siteBuckets = useMemo(
-    () => bucketByMonth(ovSites, (s) => s.createdAt ?? ""),
-    [ovSites],
-  );
-  const ovTourists = useMemo(() => {
-    const rows = liveTouristsOv.data ?? tourists;
-    return session?.userId
-      ? rows.filter((t: any) => t._dbId !== session.userId)
-      : rows;
-  }, [liveTouristsOv.data, session?.userId]);
-  const ovApps = liveAppsOv.data ?? operatorApps;
-  const ovReceipts = liveReceiptsOv.data ?? receipts;
-  const ovManifests = liveManifestsOv.data ?? manifestos;
+  const ovSitesLive = !!m;
 
-  // Real month buckets over live rows (counts + revenue). Replaces the old
-  // `scale * 3` multiplier that faked responsiveness on mock series.
-  const touristBuckets = useMemo(
-    () =>
-      bucketByMonth(ovTourists, (t: any) => t.registered ?? t.createdAt ?? ""),
-    [ovTourists],
-  );
-  const diveBuckets = useMemo(() => {
-    const counts = bucketByMonth(
-      ovManifests,
-      (m: any) => m.date,
-      (m: any) => m.divers || 0,
-    );
-    return counts;
-  }, [ovManifests]);
-  const appBuckets = useMemo(
-    () => bucketByMonth(ovApps, (a: any) => a.submitted ?? ""),
-    [ovApps],
-  );
-  const receiptBuckets = useMemo(
-    () =>
-      bucketByMonth(
-        ovReceipts,
-        (r: any) => r.date,
-        (r: any) => r.amountNum || 0,
-      ),
-    [ovReceipts],
-  );
-  const activeBuckets = useMemo(
-    () =>
-      bucketByMonth(
-        ovTourists.filter((t: any) => t.status === "Active"),
-        (t: any) => t.createdAt ?? t.registered ?? "",
-      ),
-    [ovTourists],
-  );
-  const todayISO = new Date().toISOString().slice(0, 10);
-  const yesterdayISO = new Date(Date.now() - 86400000)
-    .toISOString()
-    .slice(0, 10);
-  const todayDivers = useMemo(
-    () =>
-      ovManifests
-        .filter((m: any) => m.date === todayISO)
-        .reduce((a, m: any) => a + (m.divers || 0), 0),
-    [ovManifests, todayISO],
-  );
-  const yesterdayDivers = useMemo(
-    () =>
-      ovManifests
-        .filter((m: any) => m.date === yesterdayISO)
-        .reduce((a, m: any) => a + (m.divers || 0), 0),
-    [ovManifests, yesterdayISO],
-  );
-  const monthIdxNow = new Date().getMonth();
-  const monthIdxPrev = (monthIdxNow + 11) % 12;
-  const momDiff = (
-    buckets: MonthBucket[],
-    pick: (b: MonthBucket) => number,
-  ) => {
-    const diff = pick(buckets[monthIdxNow]) - pick(buckets[monthIdxPrev]);
-    return { diff, label: `${diff >= 0 ? "+" : ""}${diff}`, up: diff >= 0 };
-  };
-
-  const trendData = useMemo(() => {
+  const topNatNames = useMemo(() => {
     if (!ovLive)
-      return monthlyTrends.filter((d) => visibleMonths.includes(d.m));
-    const all = touristBuckets.map((b, i) => ({
-      m: b.m,
-      tourists: b.count,
-      dives: diveBuckets[i]?.total ?? 0,
+      return nationality.filter((n) => n.name !== "Other").map((n) => n.name);
+    return m
+      ? topWithOther(m.nationality, 5)
+          .filter((n) => n.name !== "Other")
+          .map((n) => n.name)
+      : [];
+  }, [m, ovLive]);
+  const sampleFilter = drillNationality
+    ? {
+        nationality:
+          drillNationality.name === "Other" ? null : drillNationality.name,
+        excludeNationalities:
+          drillNationality.name === "Other" ? topNatNames : [],
+      }
+    : drillLevel
+      ? { level: drillLevel.name as string }
+      : {};
+  const touristSample = useTouristSample(
+    range,
+    sampleFilter,
+    ovLive && (!!drillNationality || !!drillLevel),
+  );
+  const ovTourists = ovLive ? (touristSample.data ?? []) : tourists;
+
+  const todayDivers = m?.todayDivers ?? 28;
+  const yesterdayDivers = m?.yesterdayDivers ?? 24;
+  const trendData = useMemo(() => {
+    if (!m) {
+      const start = new Date(`${range.from}T00:00:00Z`);
+      const end = new Date(`${range.to}T00:00:00Z`);
+      const months = new Set<string>();
+      const cursor = new Date(start);
+      cursor.setUTCDate(1);
+      while (cursor <= end) {
+        months.add(MONTHS[cursor.getUTCMonth()]);
+        cursor.setUTCMonth(cursor.getUTCMonth() + 1);
+      }
+      return monthlyTrends.filter((d) => months.has(d.m));
+    }
+    return aggregateDaily(
+      range,
+      m.series,
+      (row) => row.date,
+      () => ({ m: "", tourists: 0, dives: 0, revenue: 0 }),
+      (acc, row) => {
+        acc.tourists += row.tourists;
+        acc.dives += row.divers;
+        acc.revenue += row.revenue;
+      },
+    ).map((row) => ({
+      m: row.label,
+      tourists: row.tourists,
+      dives: row.dives,
+      revenue: row.revenue,
     }));
-    return all.filter((d) => visibleMonths.includes(d.m));
-  }, [ovLive, touristBuckets, diveBuckets, visibleMonths]);
-  const monthDetail = drillMonth
-    ? trendData.find((d) => d.m === drillMonth.m)
-    : null;
-  const monthRevenueOf = (m: string) => {
-    const i = MONTHS.indexOf(m as (typeof MONTHS)[number]);
-    if (ovLive && i >= 0) return receiptBuckets[i]?.total ?? 0;
-    const row = trendData.find((d) => d.m === m) as any;
+  }, [m, range]);
+  const monthRevenueOf = (label: string) => {
+    const row = trendData.find((d) => d.m === label) as any;
+    if (ovLive) return row?.revenue ?? 0;
     return (row?.dives ?? 0) * 120;
   };
-
-  const shareOf = (counts: Map<string, number>, topN?: number) => {
-    const total = [...counts.values()].reduce((a, c) => a + c, 0);
-    if (total === 0) return null;
-    const sorted = [...counts.entries()].sort((a, b) => b[1] - a[1]);
-    const head = topN != null ? sorted.slice(0, topN) : sorted;
-    const out = head.map(([name, c]) => ({
-      name,
-      value: Math.round((c / total) * 100),
-    }));
-    if (topN != null && sorted.length > topN) {
-      const rest = sorted.slice(topN).reduce((a, [, c]) => a + c, 0);
-      out.push({ name: "Other", value: Math.round((rest / total) * 100) });
-    }
-    return out;
-  };
-  const scaledNationality = useMemo(() => {
-    if (!ovLive) {
-      return nationality.map((n) => ({
-        ...n,
-        value: Math.round(n.value * Math.min(scale * 3, 1)),
-      }));
-    }
-    const counts = new Map<string, number>();
-    for (const t of ovTourists) {
-      const n = (t as any).nationality;
-      if (n) counts.set(n, (counts.get(n) || 0) + 1);
-    }
-    return shareOf(counts, 5) ?? [];
-  }, [ovLive, ovTourists, scale]);
-  const scaledDiveLevel = useMemo(() => {
-    if (!ovLive) {
-      return diveLevel.map((d) => ({
-        ...d,
-        value: Math.round(d.value * Math.min(scale * 3, 1)),
-      }));
-    }
-    const counts = new Map<string, number>();
-    for (const t of ovTourists) {
-      const l = (t as any).level;
-      if (l) counts.set(l, (counts.get(l) || 0) + 1);
-    }
-    return shareOf(counts) ?? [];
-  }, [ovLive, ovTourists, scale]);
-  const scaledDiveType = useMemo(() => {
-    if (!ovLive) {
-      return diveType.map((d) => ({
-        ...d,
-        value: Math.round(d.value * Math.min(scale * 3, 1)),
-      }));
-    }
-    const counts = new Map<string, number>();
-    for (const m of ovManifests) {
-      const dt = (m as any).diveType;
-      if (dt) counts.set(dt, (counts.get(dt) || 0) + 1);
-    }
-    return shareOf(counts) ?? [];
-  }, [ovLive, ovManifests, scale]);
-  const scaledTopSites = useMemo(() => {
-    if (!ovLive) {
-      return topSites.map((s) => ({
-        ...s,
-        value: Math.round(s.value * Math.min(scale * 3, 1)),
-      }));
-    }
-    const sums = new Map<string, number>();
-    for (const m of ovManifests) {
-      const s = (m as any).site;
-      if (s) sums.set(s, (sums.get(s) || 0) + ((m as any).divers || 0));
-    }
-    return [...sums.entries()]
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 8)
-      .map(([name, value]) => ({ name, value }));
-  }, [ovLive, ovManifests, scale]);
-  const liveTotalDivers = useMemo(
-    () => ovManifests.reduce((a, m: any) => a + (m.divers || 0), 0),
-    [ovManifests],
-  );
-  const totalTourists = useMemo(
-    () => trendData.reduce((a, m) => a + m.tourists, 0),
-    [trendData],
-  );
-  const totalDives = useMemo(
-    () => trendData.reduce((a, m) => a + m.dives, 0),
-    [trendData],
-  );
-
-  // Hoisted out of the facts memo: momDiff/monthRevenueOf are redefined every
-  // render, so depending on them would defeat the memo entirely. Resolving
-  // them here keeps the memo keyed on the underlying data instead.
-  const insightTouristDelta = ovLive
-    ? momDiff(touristBuckets, (b) => b.count).diff
-    : 47;
-  const insightRevenue = ovLive ? (receiptBuckets[monthIdxNow]?.total ?? 0) : 0;
-  const insightRevenuePrev = ovLive
-    ? (receiptBuckets[monthIdxPrev]?.total ?? 0)
+  const demoRevenue = !ovLive
+    ? monthRevenueOf(MONTHS[new Date().getUTCMonth()])
     : 0;
 
+  const scaledNationality = useMemo(() => {
+    if (!ovLive) return nationality;
+    return m ? topWithOther(m.nationality, 5) : [];
+  }, [m, ovLive]);
+  const scaledDiveLevel = useMemo(() => {
+    if (!ovLive) return diveLevel;
+    const counts = new Map<string, number>();
+    for (const row of m?.level ?? []) {
+      const name = normalizeLevel(row.name) ?? "Other";
+      counts.set(name, (counts.get(name) || 0) + row.count);
+    }
+    const total = [...counts.values()].reduce((a, c) => a + c, 0);
+    if (total === 0) return [];
+    return [...counts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([name, count]) => ({
+        name,
+        value: Math.round((count / total) * 100),
+      }));
+  }, [m, ovLive]);
+  const scaledDiveType = useMemo(() => {
+    if (!ovLive) return diveType;
+    return m ? topWithOther(m.diveTypes, 5) : [];
+  }, [m, ovLive]);
+  const scaledTopSites = useMemo(() => {
+    if (!ovLive) return topSites;
+    return (m?.topSites ?? []).slice(0, 8).map((s) => ({
+      name: s.name,
+      value: s.divers,
+    }));
+  }, [m, ovLive]);
+  const liveTotalDivers = useMemo(() => {
+    if (m) return m.series.reduce((a, row) => a + row.divers, 0);
+    return monthlyTrends.reduce((a, row) => a + row.dives, 0);
+  }, [m]);
+
   // Facts for the floating insights widget (src/lib/insights.ts). Derived from
-  // the same values feeding the StatCards so the prose can never contradict
-  // the numbers beside it — no extra queries, no second source of truth.
+  // the same metrics payload feeding the StatCards so the prose can never
+  // contradict the numbers beside it.
   const insightFacts = useMemo(() => {
     const now = new Date();
     now.setHours(0, 0, 0, 0);
-    const ageInDays = (value: string | null | undefined) => {
-      if (!value) return 0;
-      const d = new Date(value + "T00:00:00");
-      if (Number.isNaN(d.getTime())) return 0;
-      return Math.max(0, (now.getTime() - d.getTime()) / 86400000);
-    };
-    const pendingReceipts = ovReceipts.filter(
+    const topSiteRow = scaledTopSites[0];
+    const matchingTypes = new Map<string, number>();
+    if (ovLive) {
+      for (const row of m?.diveTypes ?? [])
+        matchingTypes.set(row.name, row.count);
+    } else {
+      for (const row of manifestos as any[]) {
+        const t = row.diveType;
+        if (t) matchingTypes.set(t, (matchingTypes.get(t) || 0) + 1);
+      }
+    }
+    const topType = [...matchingTypes.entries()].sort(
+      (a, b) => b[1] - a[1],
+    )[0];
+    const totalTyped = [...matchingTypes.values()].reduce((a, c) => a + c, 0);
+    const demoPendingReceipts = receipts.filter(
       (r: any) => r.status === "Pending",
-    );
-    const pendingApps = ovApps.filter((a: any) => a.status === "Pending");
-    const oldestReceipt = pendingReceipts.reduce(
-      (max, r: any) => Math.max(max, ageInDays(r.date)),
-      0,
-    );
-    const oldestApp = pendingApps.reduce(
-      (max, a: any) => Math.max(max, ageInDays(a.submitted)),
-      0,
-    );
-    const expiringPasses = ovTourists.filter((t: any) => {
-      if (t.status !== "Active" || !t.expires || t.expires === "—")
+    ).length;
+    const demoPendingApps = operatorApps.filter(
+      (a: any) => a.status === "Pending",
+    ).length;
+    const demoExpiring = tourists.filter((t: any) => {
+      if (t.status !== "Active" || !t.expires || t.expires === "\u2014")
         return false;
       const exp = new Date(t.expires + "T00:00:00");
       if (Number.isNaN(exp.getTime())) return false;
       const diff = (exp.getTime() - now.getTime()) / 86400000;
       return diff > 0 && diff <= 30;
     }).length;
-    const topSiteRow = scaledTopSites[0];
-    const diveTypeCounts = new Map<string, number>();
-    for (const m of ovManifests as any[]) {
-      const t = m.diveType;
-      if (t) diveTypeCounts.set(t, (diveTypeCounts.get(t) || 0) + 1);
-    }
-    const topType = [...diveTypeCounts.entries()].sort(
-      (a, b) => b[1] - a[1],
-    )[0];
-    const totalTyped = [...diveTypeCounts.values()].reduce((a, c) => a + c, 0);
 
     return {
       live: ovLive,
-      tourists: ovLive ? ovTourists.length : 810,
-      activeIds: ovLive
-        ? ovTourists.filter((t: any) => t.status === "Active").length
-        : 358,
-      touristDelta: insightTouristDelta,
+      tourists: ovLive ? (m?.tourists ?? 0) : 810,
+      activeIds: ovLive ? (m?.activeIds ?? 0) : 358,
+      touristDelta: ovLive
+        ? (m?.tourists ?? 0) - (m?.touristsPrev ?? 0)
+        : 47,
       todayDives: todayDivers,
       dayDelta: todayDivers - yesterdayDivers,
-      monthRevenue: insightRevenue,
-      revenueDelta: insightRevenue - insightRevenuePrev,
-      pendingReceipts: pendingReceipts.length,
-      oldestPendingReceiptDays: Math.round(oldestReceipt),
-      pendingApplications: pendingApps.length,
-      oldestPendingAppDays: Math.round(oldestApp),
-      expiringPasses,
+      monthRevenue: ovLive ? (m?.revenue ?? 0) : demoRevenue,
+      revenueDelta: ovLive ? (m?.revenue ?? 0) - (m?.revenuePrev ?? 0) : 0,
+      pendingReceipts: ovLive
+        ? (m?.pendingReceipts ?? 0)
+        : demoPendingReceipts,
+      oldestPendingReceiptDays: ovLive
+        ? (m?.oldestPendingReceiptDays ?? 0)
+        : 0,
+      pendingApplications: ovLive
+        ? (m?.pendingApplications ?? 0)
+        : demoPendingApps,
+      oldestPendingAppDays: ovLive ? (m?.oldestPendingAppDays ?? 0) : 0,
+      expiringPasses: ovLive ? (m?.expiringPasses ?? 0) : demoExpiring,
       topSite: topSiteRow?.name ?? null,
       topSiteShare:
         topSiteRow && liveTotalDivers > 0
@@ -3173,35 +2956,47 @@ function Overview({ session }: { session?: StaffSession | null }) {
       topDiveType: topType?.[0] ?? null,
       topDiveTypeShare:
         topType && totalTyped > 0 ? (topType[1] / totalTyped) * 100 : 0,
-      activeSites: ovLive
-        ? ovSites.filter((s: any) => s.status === "Active").length
-        : 12,
-      // Deterministic per-day variant rotation (no randomness → reproducible).
+      activeSites: ovLive ? (m?.activeSites ?? 0) : 12,
+      // Deterministic per-day variant rotation (no randomness -> reproducible).
       seed: now.getDate(),
     };
   }, [
     ovLive,
-    ovTourists,
-    ovReceipts,
-    ovApps,
-    ovManifests,
-    ovSites,
+    m,
     todayDivers,
     yesterdayDivers,
-    // Revenue/delta are resolved above (see insightRevenue etc.) because the
-    // monthRevenueOf/momDiff helpers are redefined every render; listing them
-    // as deps would defeat the memo, and omitting them would go stale.
-    insightTouristDelta,
-    insightRevenue,
-    insightRevenuePrev,
     scaledTopSites,
     liveTotalDivers,
+    demoRevenue,
   ]);
 
   const overviewInsight = useMemo(
     () => buildOverviewInsight(insightFacts),
     [insightFacts],
   );
+
+  // In live mode, never paint benchmark numbers while queries are in flight.
+  if (isLive && !ovReady) {
+    return (
+      <div className="space-y-6">
+        <div className="h-32 rounded-2xl bg-secondary/70 animate-pulse" />
+        <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+          {Array.from({ length: 5 }).map((_, i) => (
+            <Card key={i} className="h-28 animate-pulse bg-secondary/60" />
+          ))}
+        </div>
+        <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+          <Card className="xl:col-span-2 h-80 animate-pulse bg-secondary/60" />
+          <Card className="h-80 animate-pulse bg-secondary/60" />
+        </div>
+        {ovError && (
+          <p className="text-sm text-destructive">
+            Live data unavailable — check the Supabase connection and reload.
+          </p>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6">
@@ -3231,7 +3026,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
               <h2 className="mt-1 text-2xl md:text-3xl font-display font-bold">
                 {ovLive ? (
                   <>
-                    {todayDivers} dives on the water{" "}
+                    {todayDivers} divers on the water{" "}
                     <span className="underline decoration-white/40">today</span>
                   </>
                 ) : (
@@ -3243,12 +3038,13 @@ function Overview({ session }: { session?: StaffSession | null }) {
               </h2>
               <p className="mt-1 text-primary-foreground/80 max-w-xl">
                 {(() => {
-                  const pendingApps = ovApps.filter(
-                    (a: any) => a.status === "Pending",
-                  ).length;
-                  const pendingReceipts = ovReceipts.filter(
-                    (r: any) => r.status === "Pending",
-                  ).length;
+                  const pendingApps = ovLive
+                    ? (m?.pendingApplications ?? 0)
+                    : ovApps.filter((a: any) => a.status === "Pending").length;
+                  const pendingReceipts = ovLive
+                    ? (m?.pendingReceipts ?? 0)
+                    : ovReceipts.filter((r: any) => r.status === "Pending")
+                        .length;
                   return `${pendingApps} operator application${pendingApps !== 1 ? "s" : ""} and ${pendingReceipts} receipt${pendingReceipts !== 1 ? "s" : ""} are waiting on your review.`;
                 })()}
               </p>
@@ -3304,20 +3100,27 @@ function Overview({ session }: { session?: StaffSession | null }) {
       <Reveal>
         <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
           {(() => {
-            const tDelta = momDiff(touristBuckets, (b) => b.count);
-            const aDelta = momDiff(activeBuckets, (b) => b.count);
-            const eDelta = momDiff(appBuckets, (b) => b.count);
-            const approvedCount = ovApps.filter(
-              (a: any) => a.status === "Approved",
-            ).length;
+            const tDelta =
+              ovLive && m ? m.tourists - m.touristsPrev : undefined;
             const dayDiff = todayDivers - yesterdayDivers;
+            const sample = !ovLive;
+            const approvedCount =
+              ovLive && m
+                ? m.approvedOperators
+                : operatorApps.filter((a: any) => a.status === "Approved")
+                    .length;
             const cards = [
               {
                 icon: Users,
                 label: "Tourists",
-                value: ovLive ? String(ovTourists.length) : "810",
-                delta: ovLive ? tDelta.label : "+47",
-                up: ovLive ? tDelta.up : true,
+                value: ovLive ? String(m?.tourists ?? 0) : "810",
+                delta:
+                  tDelta != null
+                    ? `${tDelta >= 0 ? "+" : ""}${tDelta.toLocaleString()}`
+                    : undefined,
+                deltaLabel: "vs previous period",
+                up: tDelta != null ? tDelta >= 0 : undefined,
+                sample,
                 target: {
                   section: "tourists",
                   q: "",
@@ -3330,51 +3133,34 @@ function Overview({ session }: { session?: StaffSession | null }) {
               {
                 icon: UserCheck,
                 label: "Active IDs",
-                value: ovLive
-                  ? String(
-                      ovTourists.filter((t: any) => t.status === "Active")
-                        .length,
-                    )
-                  : "358",
-                delta: ovLive ? aDelta.label : "+12",
-                up: ovLive ? aDelta.up : true,
+                value: ovLive ? String(m?.activeIds ?? 0) : "358",
+                sample,
                 target: { section: "tourists", status: "Active", q: "" },
               },
               {
                 icon: Waves,
-                label: "Today's Dives",
+                label: "Divers Today",
                 value: ovLive ? String(todayDivers) : "28",
-                delta: ovLive ? `${dayDiff >= 0 ? "+" : ""}${dayDiff}` : "+6",
-                up: ovLive ? dayDiff >= 0 : true,
+                delta: ovLive
+                  ? `${dayDiff >= 0 ? "+" : ""}${dayDiff}`
+                  : undefined,
+                deltaLabel: "vs yesterday",
+                up: ovLive ? dayDiff >= 0 : undefined,
+                sample,
                 target: { section: "dive-ops", tab: "manifestos" },
               },
               {
                 icon: Building2,
-                label: "Establishments",
+                label: "Approved Operators",
                 value: String(approvedCount),
-                delta: ovLive ? eDelta.label : "+3",
-                up: ovLive ? eDelta.up : true,
+                sample,
                 target: { section: "establishments", tab: "registered" },
               },
               {
                 icon: MapPin,
                 label: "Active Sites",
-                value: String(
-                  ovSites.filter((s) => s.status === "Active").length,
-                ),
-                delta: ovSitesLive
-                  ? (() => {
-                      const d =
-                        siteBuckets[monthIdxNow].count -
-                        siteBuckets[monthIdxPrev].count;
-                      return `${d >= 0 ? "+" : ""}${d}`;
-                    })()
-                  : "+1",
-                up: ovSitesLive
-                  ? siteBuckets[monthIdxNow].count -
-                      siteBuckets[monthIdxPrev].count >=
-                    0
-                  : true,
+                value: ovLive ? String(m?.activeSites ?? 0) : "12",
+                sample: !ovSitesLive,
                 target: { section: "dive-ops", tab: "sites", q: "" },
               },
             ];
@@ -3391,7 +3177,9 @@ function Overview({ session }: { session?: StaffSession | null }) {
                   label={s.label}
                   value={s.value}
                   delta={s.delta}
+                  deltaLabel={s.deltaLabel}
                   up={s.up}
+                  sample={s.sample}
                 />
               </button>
             ));
@@ -3405,6 +3193,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
         operatorApps={ovApps}
         manifestos={ovManifests}
         tourists={ovTourists}
+        expiringPasses={ovLive ? (m?.expiringPasses ?? 0) : undefined}
         setFilters={setFilters}
       />
 
@@ -3413,12 +3202,18 @@ function Overview({ session }: { session?: StaffSession | null }) {
         <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
           <SectionCard
             title="Monthly Trends"
+            subtitle="Grouped by manifest record date"
             className="xl:col-span-2"
             action={
-              <Tabs defaultValue="tourists">
+              <Tabs
+                value={trendMetric}
+                onValueChange={(v) =>
+                  setTrendMetric(v === "dives" ? "dives" : "tourists")
+                }
+              >
                 <TabsList className="bg-secondary">
                   <TabsTrigger value="tourists">Tourists</TabsTrigger>
-                  <TabsTrigger value="dives">Dives</TabsTrigger>
+                  <TabsTrigger value="dives">Divers</TabsTrigger>
                 </TabsList>
               </Tabs>
             }
@@ -3469,38 +3264,28 @@ function Overview({ session }: { session?: StaffSession | null }) {
                     />
                     <XAxis
                       dataKey="m"
-                      stroke="var(--color-muted-foreground)"
-                      fontSize={12}
-                      tickLine={false}
-                      axisLine={false}
+                      {...chartAxisProps}
                     />
                     <YAxis
-                      stroke="var(--color-muted-foreground)"
-                      fontSize={12}
-                      tickLine={false}
-                      axisLine={false}
+                      {...chartAxisProps}
                     />
                     <Tooltip
-                      contentStyle={{
-                        background: "var(--color-card)",
-                        border: "1px solid var(--color-border)",
-                        borderRadius: 12,
-                        fontSize: 12,
-                      }}
+                      contentStyle={chartTooltipStyle}
                     />
                     <Area
                       type="monotone"
-                      dataKey="dives"
-                      stroke="var(--color-primary-glow)"
-                      strokeWidth={2}
-                      fill="url(#areaS)"
-                    />
-                    <Area
-                      type="monotone"
-                      dataKey="tourists"
-                      stroke="var(--color-primary)"
+                      dataKey={trendMetric}
+                      stroke={
+                        trendMetric === "tourists"
+                          ? "var(--color-primary)"
+                          : "var(--color-primary-glow)"
+                      }
                       strokeWidth={2.5}
-                      fill="url(#areaP)"
+                      fill={
+                        trendMetric === "tourists"
+                          ? "url(#areaP)"
+                          : "url(#areaS)"
+                      }
                     />
                   </AreaChart>
                 </ResponsiveContainer>
@@ -3537,12 +3322,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
                       ))}
                     </Pie>
                     <Tooltip
-                      contentStyle={{
-                        background: "var(--color-card)",
-                        border: "1px solid var(--color-border)",
-                        borderRadius: 12,
-                        fontSize: 12,
-                      }}
+                      contentStyle={chartTooltipStyle}
                     />
                   </PieChart>
                 </ResponsiveContainer>
@@ -3578,7 +3358,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
                   <RadialBarChart
                     innerRadius="30%"
                     outerRadius="100%"
-                    data={diveLevel}
+                    data={scaledDiveLevel}
                     startAngle={90}
                     endAngle={-270}
                   >
@@ -3594,12 +3374,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
                       ))}
                     </RadialBar>
                     <Tooltip
-                      contentStyle={{
-                        background: "var(--color-card)",
-                        border: "1px solid var(--color-border)",
-                        borderRadius: 12,
-                        fontSize: 12,
-                      }}
+                      contentStyle={chartTooltipStyle}
                     />
                   </RadialBarChart>
                 </ResponsiveContainer>
@@ -3636,24 +3411,13 @@ function Overview({ session }: { session?: StaffSession | null }) {
                     />
                     <XAxis
                       dataKey="name"
-                      stroke="var(--color-muted-foreground)"
-                      fontSize={12}
-                      tickLine={false}
-                      axisLine={false}
+                      {...chartAxisProps}
                     />
                     <YAxis
-                      stroke="var(--color-muted-foreground)"
-                      fontSize={12}
-                      tickLine={false}
-                      axisLine={false}
+                      {...chartAxisProps}
                     />
                     <Tooltip
-                      contentStyle={{
-                        background: "var(--color-card)",
-                        border: "1px solid var(--color-border)",
-                        borderRadius: 12,
-                        fontSize: 12,
-                      }}
+                      contentStyle={chartTooltipStyle}
                     />
                     <Bar
                       dataKey="value"
@@ -3686,27 +3450,16 @@ function Overview({ session }: { session?: StaffSession | null }) {
                     />
                     <XAxis
                       type="number"
-                      stroke="var(--color-muted-foreground)"
-                      fontSize={12}
-                      tickLine={false}
-                      axisLine={false}
+                      {...chartAxisProps}
                     />
                     <YAxis
                       dataKey="name"
                       type="category"
-                      stroke="var(--color-muted-foreground)"
-                      fontSize={12}
-                      tickLine={false}
-                      axisLine={false}
+                      {...chartAxisProps}
                       width={100}
                     />
                     <Tooltip
-                      contentStyle={{
-                        background: "var(--color-card)",
-                        border: "1px solid var(--color-border)",
-                        borderRadius: 12,
-                        fontSize: 12,
-                      }}
+                      contentStyle={chartTooltipStyle}
                     />
                     <Bar
                       dataKey="value"
@@ -3744,14 +3497,13 @@ function Overview({ session }: { session?: StaffSession | null }) {
                   icon: Users,
                 },
                 {
-                  label: "Dives",
+                  label: "Divers logged",
                   value: drillMonth.dives.toLocaleString(),
                   icon: Waves,
                 },
                 {
-                  label: "Avg per tourist",
+                  label: "Divers per tourist",
                   value: (
-                    drillMonth.divers ??
                     drillMonth.dives / (drillMonth.tourists || 1)
                   ).toFixed(1),
                   icon: TrendingUp,
@@ -3783,7 +3535,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
                 </TableRow>
                 <TableRow>
                   <TableCell className="text-muted-foreground">
-                    Total dives
+                    Divers logged
                   </TableCell>
                   <TableCell className="text-right font-medium">
                     {drillMonth.dives.toLocaleString()}
@@ -3791,15 +3543,15 @@ function Overview({ session }: { session?: StaffSession | null }) {
                 </TableRow>
                 <TableRow>
                   <TableCell className="text-muted-foreground">
-                    Dives per tourist
+                    Divers per tourist
                   </TableCell>
                   <TableCell className="text-right font-medium">
-                    {(drillMonth.dives / drillMonth.tourists).toFixed(1)}
+                    {(drillMonth.dives / (drillMonth.tourists || 1)).toFixed(1)}
                   </TableCell>
                 </TableRow>
                 <TableRow>
                   <TableCell className="text-muted-foreground">
-                    Estimated revenue
+                    {ovLive ? "Verified revenue" : "Estimated revenue (sample)"}
                   </TableCell>
                   <TableCell className="text-right font-medium">
                     ₱{Math.round(monthRevenueOf(drillMonth.m)).toLocaleString()}
@@ -3827,7 +3579,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
                 {
                   label: "Est. count",
                   value: Math.round(
-                    ((ovLive ? ovTourists.length : 12480) *
+                    ((ovLive ? (m?.tourists ?? 0) : 810) *
                       drillNationality.value) /
                       100,
                   ).toLocaleString(),
@@ -3895,7 +3647,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
                       colSpan={3}
                       className="text-center text-muted-foreground py-4"
                     >
-                      No sample tourists in this group.
+                      No tourists in this group.
                     </TableCell>
                   </TableRow>
                 )}
@@ -3913,7 +3665,11 @@ function Overview({ session }: { session?: StaffSession | null }) {
         stats={
           drillSite
             ? [
-                { label: "Total dives", value: drillSite.value, icon: Waves },
+                {
+                  label: "Divers logged",
+                  value: drillSite.value,
+                  icon: Waves,
+                },
                 {
                   label: "Rank",
                   value: `#${scaledTopSites.indexOf(drillSite) + 1}`,
@@ -4091,7 +3847,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
                 {
                   label: "Est. divers",
                   value: Math.round(
-                    ((ovLive ? ovTourists.length : 12480) * drillLevel.value) /
+                    ((ovLive ? liveTotalDivers : 12480) * drillLevel.value) /
                       100,
                   ).toLocaleString(),
                   icon: Users,
@@ -4143,7 +3899,7 @@ function Overview({ session }: { session?: StaffSession | null }) {
 }
 function TouristMgmt({ session }: { session?: StaffSession | null }) {
   const { search, setFilters, resetFilters } = useFilters();
-  const { visibleMonths } = useGlobalDateRange();
+  const { inRange } = useGlobalDateRange();
   const { canAct, deny } = usePermission();
   const [mockTourists, setMockTourists] = useState(tourists);
   // Live mode (Supabase configured): the registry comes from tourists;
@@ -4153,7 +3909,8 @@ function TouristMgmt({ session }: { session?: StaffSession | null }) {
   const liveTourists = useTouristsLive();
   const invalidateTourists = useInvalidateLive();
   const isLiveData = isLive && !!liveTourists.data;
-  const touristList = liveTourists.data ?? mockTourists;
+  const touristsSource = useLiveList(isLive, liveTourists, mockTourists);
+  const touristList = touristsSource.rows;
   // Hide the signed-in staffer's own tourists row: Sinsay auto-creates a
   // tourists profile for every auth user, including staff logins. Server-side
   // exclusion can't do better (to_staff RLS is own-row-only), so filter the
@@ -4943,21 +4700,17 @@ function TouristMgmt({ session }: { session?: StaffSession | null }) {
   };
 
   const filtered = useMemo(() => {
-    const monthSet = new Set(visibleMonths);
     return visibleTourists.filter((t) => {
       if (search.status !== "All" && t.status !== search.status) return false;
-      if (search.nationality !== "All" && t.nationality !== search.nationality)
+      if (
+        search.nationality !== "All" &&
+        String(t.nationality ?? "").toLowerCase() !==
+          search.nationality.toLowerCase()
+      )
         return false;
       if (search.level !== "All" && t.level !== search.level) return false;
-      if (monthSet.size < 12) {
-        const d = new Date(t.registered + "T00:00:00");
-        // Unknown registration date → show the row, don't hide it. Accounts
-        // with limited info must stay visible under any range filter.
-        if (!Number.isNaN(d.getTime())) {
-          const key = d.toLocaleString("en", { month: "short" });
-          if (!monthSet.has(key)) return false;
-        }
-      }
+      // Unknown dates stay visible under every range filter.
+      if (!inRange(t.registered)) return false;
       if (search.q) {
         const q = search.q.toLowerCase();
         if (
@@ -4974,7 +4727,7 @@ function TouristMgmt({ session }: { session?: StaffSession | null }) {
     search.status,
     search.nationality,
     search.level,
-    visibleMonths,
+    inRange,
   ]);
 
   // Filter options follow the visible rows: live distinct values when live,
@@ -5020,7 +4773,7 @@ function TouristMgmt({ session }: { session?: StaffSession | null }) {
   if (search.nationality !== "All")
     activeFilters.push({
       key: "nationality",
-      label: `Nationality: ${search.nationality}`,
+      label: `Nationality: ${displayNationality(search.nationality)}`,
     });
   if (search.level !== "All")
     activeFilters.push({ key: "level", label: `Level: ${search.level}` });
@@ -5138,9 +4891,9 @@ function TouristMgmt({ session }: { session?: StaffSession | null }) {
       <div className="flex flex-col gap-3">
         <div className="flex items-center gap-2">
           <DataSourceBadge
-            live={isLiveData}
+            live={isLive}
             isError={liveTourists.isError}
-            isLoading={liveTourists.isFetching}
+            isLoading={touristsSource.isLoading}
           />
         </div>
         <div className="flex flex-col md:flex-row gap-3 md:items-center">
@@ -5218,8 +4971,11 @@ function TouristMgmt({ session }: { session?: StaffSession | null }) {
       </div>
 
       <div className="text-xs text-muted-foreground">
-        {filtered.length} of {visibleTourists.length} tourist
-        {visibleTourists.length !== 1 ? "s" : ""}
+        {touristsSource.isLoading
+          ? "Loading tourists…"
+          : `${filtered.length} of ${visibleTourists.length} tourist${
+              visibleTourists.length !== 1 ? "s" : ""
+            }`}
       </div>
 
       <Card className="shadow-elegant overflow-hidden">
@@ -5237,7 +4993,9 @@ function TouristMgmt({ session }: { session?: StaffSession | null }) {
             </TableRow>
           </TableHeader>
           <TableBody>
-            {filtered.length === 0 ? (
+            {touristsSource.isLoading ? (
+              <TableSkeletonRows rows={6} cols={7} />
+            ) : filtered.length === 0 ? (
               <TableRow>
                 <TableCell
                   colSpan={7}
@@ -5462,15 +5220,15 @@ export function OperatorMgmt({
 } = {}) {
   const { canAct, deny } = usePermission();
   const { search, setFilters } = useFilters();
-  const { visibleMonths } = useGlobalDateRange();
+  const { inRange } = useGlobalDateRange();
   const [mockApps, setMockApps] = useState(operatorApps);
   // Live mode (Supabase configured): the queue comes from
   // operator_applications; mocks are the offline fallback.
   const isLive = useLiveMode();
   const liveApps = useOperatorApplicationsLive();
   const invalidateLive = useInvalidateLive();
-  const isLiveData = isLive && !!liveApps.data;
-  const apps = liveApps.data ?? mockApps;
+  const appsSource = useLiveList(isLive, liveApps, mockApps);
+  const apps = appsSource.rows;
   useEffect(() => {
     if (liveApps.isError) {
       toast.error("Could not load live applications", {
@@ -5489,16 +5247,9 @@ export function OperatorMgmt({
   } | null>(null);
 
   const filteredApps = useMemo(() => {
-    const monthSet = new Set(visibleMonths);
     return apps.filter((o) => {
       if (search.status !== "All" && o.status !== search.status) return false;
-      if (monthSet.size < 12) {
-        const d = new Date(o.submitted + "T00:00:00");
-        if (!Number.isNaN(d.getTime())) {
-          const key = d.toLocaleString("en", { month: "short" });
-          if (!monthSet.has(key)) return false;
-        }
-      }
+      if (!inRange(o.submitted)) return false;
       if (search.q) {
         const q = search.q.toLowerCase();
         if (
@@ -5510,7 +5261,7 @@ export function OperatorMgmt({
       }
       return true;
     });
-  }, [apps, search.q, search.status, visibleMonths]);
+  }, [apps, search.q, search.status, inRange]);
 
   // Review queue: approved applications graduate to the registry (and reappear
   // under Active Operators), so they are dropped from the Applications table to
@@ -5812,9 +5563,9 @@ export function OperatorMgmt({
     <div className="space-y-4">
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <DataSourceBadge
-          live={isLiveData}
+          live={isLive}
           isError={liveApps.isError}
-          isLoading={liveApps.isFetching}
+          isLoading={appsSource.isLoading}
         />
         <div className="flex items-center gap-2">
           <div className="relative">
@@ -5861,8 +5612,11 @@ export function OperatorMgmt({
               onRemove={handleRemoveFilter}
             />
             <div className="text-xs text-muted-foreground">
-              {queueApps.length} of {apps.length} application
-              {apps.length !== 1 ? "s" : ""}
+              {appsSource.isLoading
+                ? "Loading applications…"
+                : `${queueApps.length} of ${apps.length} application${
+                    apps.length !== 1 ? "s" : ""
+                  }`}
             </div>
           </div>
           {selected.size > 0 && (
@@ -5936,7 +5690,9 @@ export function OperatorMgmt({
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {queueApps.length === 0 ? (
+                {appsSource.isLoading ? (
+                  <TableSkeletonRows rows={6} cols={8} />
+                ) : queueApps.length === 0 ? (
                   <TableRow>
                     <TableCell
                       colSpan={8}
@@ -6117,7 +5873,11 @@ export function OperatorMgmt({
         <>
           {(() => {
             const activeOps = apps.filter((a) => a.status === "Approved");
-            return activeOps.length === 0 ? (
+            return appsSource.isLoading ? (
+              <Card className="p-8 text-center text-muted-foreground shadow-elegant">
+                Loading active operators…
+              </Card>
+            ) : activeOps.length === 0 ? (
               <Card className="p-8 text-center text-muted-foreground shadow-elegant">
                 No active operators found.
               </Card>
@@ -6202,7 +5962,7 @@ export function OperatorMgmt({
 export function ReceiptVerification() {
   const { canAct, deny } = usePermission();
   const { search, setFilters, resetFilters } = useFilters();
-  const { visibleMonths } = useGlobalDateRange();
+  const { inRange } = useGlobalDateRange();
   const [viewing, setViewing] = useState<any>(null);
   const [lightbox, setLightbox] = useState<any>(null);
   const [mockItems, setMockItems] = useState(receipts);
@@ -6211,7 +5971,8 @@ export function ReceiptVerification() {
   const isLive = useLiveMode();
   const liveReceipts = useReceiptsLive();
   const invalidateLiveReceipts = useInvalidateLive();
-  const items = liveReceipts.data ?? mockItems;
+  const receiptsSource = useLiveList(isLive, liveReceipts, mockItems);
+  const items = receiptsSource.rows;
   useEffect(() => {
     if (liveReceipts.isError) {
       toast.error("Could not load live receipts", {
@@ -6260,7 +6021,6 @@ export function ReceiptVerification() {
   } | null>(null);
 
   const filtered = useMemo(() => {
-    const monthSet = new Set(visibleMonths);
     return items.filter((r) => {
       if (search.status !== "All" && r.status !== search.status) return false;
       if (search.q) {
@@ -6274,13 +6034,7 @@ export function ReceiptVerification() {
       }
       if (search.dateFrom && r.date < search.dateFrom) return false;
       if (search.dateTo && r.date > search.dateTo) return false;
-      if (monthSet.size < 12) {
-        const d = new Date(r.date + "T00:00:00");
-        if (!Number.isNaN(d.getTime())) {
-          const key = d.toLocaleString("en", { month: "short" });
-          if (!monthSet.has(key)) return false;
-        }
-      }
+      if (!inRange(r.date)) return false;
       return true;
     });
   }, [
@@ -6289,7 +6043,7 @@ export function ReceiptVerification() {
     search.status,
     search.dateFrom,
     search.dateTo,
-    visibleMonths,
+    inRange,
   ]);
 
   const {
@@ -6563,17 +6317,15 @@ export function ReceiptVerification() {
     }
   };
 
-  const isLiveData = isLive && !!liveReceipts.data;
-
   return (
     <div className="space-y-4">
       {/* Search & Filters */}
       <div className="flex flex-col gap-3">
         <div className="flex items-center gap-2">
           <DataSourceBadge
-            live={isLiveData}
+            live={isLive}
             isError={liveReceipts.isError}
-            isLoading={liveReceipts.isFetching}
+            isLoading={receiptsSource.isLoading}
           />
         </div>
         <div className="flex flex-col md:flex-row gap-3 md:items-center">
@@ -6642,8 +6394,11 @@ export function ReceiptVerification() {
       </div>
 
       <div className="text-xs text-muted-foreground">
-        {filtered.length} of {items.length} receipt
-        {items.length !== 1 ? "s" : ""}
+        {receiptsSource.isLoading
+          ? "Loading receipts…"
+          : `${filtered.length} of ${items.length} receipt${
+              items.length !== 1 ? "s" : ""
+            }`}
       </div>
 
       {selected.size > 0 && (
@@ -6699,7 +6454,9 @@ export function ReceiptVerification() {
       )}
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {filtered.length === 0 ? (
+        {receiptsSource.isLoading ? (
+          <CardGridSkeleton count={6} />
+        ) : filtered.length === 0 ? (
           <div className="col-span-full text-center py-12 text-muted-foreground">
             No receipts match the current filters.
           </div>
@@ -6963,7 +6720,7 @@ export function ReceiptVerification() {
 export function ManifestoView() {
   const { canAct, deny } = usePermission();
   const { search, setFilters, resetFilters } = useFilters();
-  const { visibleMonths } = useGlobalDateRange();
+  const { inRange } = useGlobalDateRange();
   const [viewing, setViewing] = useState<any>(null);
   const [roster, setRoster] = useState<any[] | null>(null);
   const [rosterLoading, setRosterLoading] = useState(false);
@@ -6976,7 +6733,8 @@ export function ManifestoView() {
   const liveManifests = useManifestsLive();
   const invalidateManifests = useInvalidateLive();
   const isLiveData = isLive && !!liveManifests.data;
-  const items = liveManifests.data ?? mockItems;
+  const manifestsSource = useLiveList(isLive, liveManifests, mockItems);
+  const items = manifestsSource.rows;
   useEffect(() => {
     if (liveManifests.isError) {
       toast.error("Could not load live manifestos", {
@@ -7043,7 +6801,6 @@ export function ManifestoView() {
   };
 
   const filtered = useMemo(() => {
-    const monthSet = new Set(visibleMonths);
     return items.filter((m) => {
       if (search.site !== "All" && m.site !== search.site) return false;
       if (search.q) {
@@ -7057,13 +6814,7 @@ export function ManifestoView() {
       }
       if (search.dateFrom && m.date < search.dateFrom) return false;
       if (search.dateTo && m.date > search.dateTo) return false;
-      if (monthSet.size < 12) {
-        const d = new Date(m.date + "T00:00:00");
-        if (!Number.isNaN(d.getTime())) {
-          const key = d.toLocaleString("en", { month: "short" });
-          if (!monthSet.has(key)) return false;
-        }
-      }
+      if (!inRange(m.date)) return false;
       if (verificationFilter === "verified" && !isVerified(m)) return false;
       if (verificationFilter === "unverified" && isVerified(m)) return false;
       return true;
@@ -7077,7 +6828,7 @@ export function ManifestoView() {
     search.site,
     search.dateFrom,
     search.dateTo,
-    visibleMonths,
+    inRange,
   ]);
 
   // Site options follow the data source: live locations when live, mock
@@ -7204,9 +6955,9 @@ export function ManifestoView() {
       <div className="flex flex-col gap-3">
         <div className="flex items-center gap-2">
           <DataSourceBadge
-            live={isLiveData}
+            live={isLive}
             isError={liveManifests.isError}
-            isLoading={liveManifests.isFetching}
+            isLoading={manifestsSource.isLoading}
           />
         </div>
         <div className="flex flex-col md:flex-row gap-3 md:items-center">
@@ -7278,8 +7029,11 @@ export function ManifestoView() {
       </div>
 
       <div className="text-xs text-muted-foreground">
-        {filtered.length} of {items.length} manifesto
-        {items.length !== 1 ? "s" : ""}
+        {manifestsSource.isLoading
+          ? "Loading manifestos…"
+          : `${filtered.length} of ${items.length} manifesto${
+              items.length !== 1 ? "s" : ""
+            }`}
       </div>
 
       <div className="flex items-center gap-1 bg-secondary/60 rounded-lg p-0.5 w-fit">
@@ -7338,7 +7092,9 @@ export function ManifestoView() {
       )}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
-        {filtered.length === 0 ? (
+        {manifestsSource.isLoading ? (
+          <CardGridSkeleton count={8} />
+        ) : filtered.length === 0 ? (
           <div className="col-span-full text-center py-12 text-muted-foreground">
             No manifestos match the current filters.
           </div>
@@ -8319,9 +8075,9 @@ export function DiveSiteMgmt() {
         <div className="flex flex-col gap-3">
           <div className="flex items-center gap-2">
             <DataSourceBadge
-              live={isLiveData}
+              live={isLive}
               isError={liveSites.isError}
-              isLoading={liveSites.isFetching}
+              isLoading={isLive && liveSites.isPending}
             />
           </div>
           <div className="flex flex-col md:flex-row gap-3 md:items-center">
@@ -8420,8 +8176,11 @@ export function DiveSiteMgmt() {
         </div>
 
         <div className="text-xs text-muted-foreground">
-          {filtered.length} of {sites.length} dive site
-          {sites.length !== 1 ? "s" : ""}
+          {isLive && liveSites.isPending
+            ? "Loading dive sites…"
+            : `${filtered.length} of ${sites.length} dive site${
+                sites.length !== 1 ? "s" : ""
+              }`}
         </div>
 
         <Card className="shadow-elegant overflow-hidden">
@@ -8441,7 +8200,9 @@ export function DiveSiteMgmt() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {filtered.length === 0 ? (
+              {isLive && liveSites.isPending ? (
+                <TableSkeletonRows rows={6} cols={10} />
+              ) : filtered.length === 0 ? (
                 <TableRow>
                   <TableCell
                     colSpan={10}
@@ -9063,144 +8824,63 @@ export function DiveSiteMgmt() {
 }
 
 /* ------------------------------ OPERATOR ANALYTICS ------------------------------ */
-export function OperatorAnalytics() {
-  const { scale } = useGlobalDateRange();
+export function OperatorAnalytics({ range }: { range: DateRange }) {
   const { setFilters } = useFilters();
   const isLive = useLiveMode();
   const [drillOperator, setDrillOperator] = useState<any>(null);
-  // Live per-operator performance (React Query cache — no extra fetch):
-  // manifest counts + diver sums from dive_manifests, credit use/purchase
-  // from dive_pass_inventory, revenue from inventory batch amounts. This
-  // replaces the mock's fixed 18.5/7.2/4200 multipliers with real math.
-  const liveManifestsOp = useManifestsLive();
-  const liveInventoryOp = useInventoryLive();
-  const liveOperatorRows = useMemo(() => {
-    if (!liveManifestsOp.data || !liveInventoryOp.data) return null;
-    const map = new Map<
-      string,
-      {
-        name: string;
-        manifestos: number;
-        divers: number;
-        credits: number;
-        purchased: number;
-        remaining: number;
-        revenue: number;
-      }
-    >();
-    const row = (name: string) => {
-      let r = map.get(name);
-      if (!r) {
-        r = {
-          name,
-          manifestos: 0,
-          divers: 0,
-          credits: 0,
-          purchased: 0,
-          remaining: 0,
-          revenue: 0,
-        };
-        map.set(name, r);
-      }
-      return r;
-    };
-    for (const m of liveManifestsOp.data) {
-      const r = row(m.operator);
-      r.manifestos += 1;
-      r.divers += m.divers || 0;
-    }
-    for (const inv of liveInventoryOp.data) {
-      const r = row(inv.operator);
-      const used = inv.totalPasses - inv.remainingPasses;
-      r.credits += used;
-      r.purchased += inv.totalPasses;
-      r.remaining += inv.remainingPasses;
-      r.revenue += inv.amount || 0;
-    }
-    return [...map.values()].sort((a, b) => b.manifestos - a.manifestos);
-  }, [liveManifestsOp.data, liveInventoryOp.data]);
-  const opManifests = liveManifestsOp.data ?? manifestos;
+  const metrics = useMetrics("operator", range);
+  const m = metrics.data;
   const scaledOperatorActivity = useMemo(() => {
-    if (liveOperatorRows) return liveOperatorRows;
-    // Live mode with no rows yet must show an empty state, never mock.
+    if (m) return m.rows;
     if (isLive) return [];
-    return operatorActivity.map((o) => ({
-      ...o,
-      manifestos: Math.round(o.manifestos * Math.min(scale * 3, 1)),
-      credits: Math.round(o.credits * Math.min(scale * 3, 1)),
-    }));
-  }, [liveOperatorRows, scale, isLive]);
+    return operatorActivity.map((operator) => {
+      const credits = operator.credits;
+      return {
+        ...operator,
+        divers: Math.round(operator.manifestos * 7.2),
+        purchased: Math.round(credits / 0.7),
+        remaining: 0,
+        revenue: operator.manifestos * 4200,
+        recent: [],
+      };
+    });
+  }, [m, isLive]);
+
 
   const operatorInsight = useMemo(() => {
-    const rows = liveOperatorRows ?? [];
-    const now = new Date();
-    now.setHours(0, 0, 0, 0);
-    const totalManifestos = rows.reduce((a, r) => a + r.manifestos, 0);
-    const withManifests = rows.filter((r) => r.manifestos > 0);
-    // Inventory names every accredited operator; anything absent from the
-    // manifest set filed nothing this period.
-    const allNames = new Set<string>();
-    for (const r of rows) allNames.add(r.name);
-    for (const inv of liveInventoryOp.data ?? []) allNames.add(inv.operator);
-    for (const m of liveManifestsOp.data ?? []) allNames.add(m.operator);
-    const idle = [...allNames].filter(
-      (n) => !withManifests.some((r) => r.name === n),
-    ).length;
-    const exhausted = rows.filter(
-      (r) => r.purchased > 0 && r.remaining <= 0,
-    ).length;
+    const rows = m?.rows ?? [];
+    const withManifests = rows.filter((row) => row.manifestos > 0);
+    const totalManifestos = rows.reduce((sum, row) => sum + row.manifestos, 0);
     const top = withManifests[0];
-
     return buildOperatorInsight({
-      live: !!liveOperatorRows,
-      operatorsWithManifests: withManifests.length,
-      idleOperators: idle,
+      live: isLive,
+      operatorsWithManifests: m?.active ?? withManifests.length,
+      idleOperators: m ? Math.max(0, m.operators - m.active) : 0,
       topOperator: top?.name ?? null,
       topOperatorShare:
         top && totalManifestos > 0
           ? (top.manifestos / totalManifestos) * 100
           : 0,
-      exhaustedOperators: exhausted,
-      seed: now.getDate(),
+      exhaustedOperators: rows.filter(
+        (row) => row.purchased > 0 && row.remaining <= 0,
+      ).length,
+      seed: new Date().getDate(),
     });
-  }, [liveOperatorRows, liveInventoryOp.data, liveManifestsOp.data]);
+  }, [isLive, m]);
 
   const opKpis = useMemo(() => {
-    const cur = new Date().getMonth();
-    const prev = (cur + 11) % 12;
-    const mom = (b: any[] | null, key: "count" | "total") =>
-      b ? (b[cur]?.[key] ?? 0) - (b[prev]?.[key] ?? 0) : 0;
-    const mb = liveManifestsOp.data
-      ? bucketByMonth(liveManifestsOp.data, (m: any) => m.date)
-      : null;
-    const db = liveManifestsOp.data
-      ? bucketByMonth(
-          liveManifestsOp.data,
-          (m: any) => m.date,
-          (m: any) => m.divers || 0,
-        )
-      : null;
-    const rb = liveInventoryOp.data
-      ? bucketByMonth(
-          liveInventoryOp.data,
-          (inv: any) => inv.createdAt,
-          (inv: any) => inv.amount || 0,
-        )
-      : null;
-
-    if (liveOperatorRows) {
+    if (m) {
       return {
         live: true,
-        active: liveOperatorRows.filter((r) => r.manifestos > 0).length,
-        manifestos: liveOperatorRows.reduce((a, r) => a + r.manifestos, 0),
-        divers: liveOperatorRows.reduce((a, r) => a + r.divers, 0),
-        revenue: liveOperatorRows.reduce((a, r) => a + r.revenue, 0),
-        mDelta: mom(mb, "count"),
-        dDelta: mom(db, "total"),
-        rDelta: mom(rb, "total"),
+        active: m.active,
+        manifestos: m.manifestos,
+        divers: m.divers,
+        revenue: m.revenue,
+        mDelta: m.manifestos - m.manifestosPrev,
+        dDelta: m.divers - m.diversPrev,
+        rDelta: m.revenue - m.revenuePrev,
       };
     }
-    // Live mode with no rows yet: show zeros, never mock figures.
     if (isLive) {
       return {
         live: true,
@@ -9213,26 +8893,30 @@ export function OperatorAnalytics() {
         rDelta: 0,
       };
     }
-    const manifestos = operatorActivity.reduce((a, o) => a + o.manifestos, 0);
+    const totalManifestos = operatorActivity.reduce(
+      (sum, operator) => sum + operator.manifestos,
+      0,
+    );
     return {
       live: false,
       active: operatorActivity.length,
-      manifestos,
-      divers: Math.round(manifestos * 7.2),
-      revenue: manifestos * 4200,
+      manifestos: totalManifestos,
+      divers: Math.round(totalManifestos * 7.2),
+      revenue: totalManifestos * 4200,
       mDelta: 0,
       dDelta: 0,
       rDelta: 0,
     };
-  }, [liveOperatorRows, liveManifestsOp.data, liveInventoryOp.data, isLive]);
+  }, [m, isLive]);
 
   const kpiDelta = (delta: number) =>
     delta === 0 && !opKpis.live ? "" : `${delta >= 0 ? "+" : ""}${delta}`;
 
   return (
-    <div className="relative">
-      <InsightWidget insight={operatorInsight} label="Operators" />
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+    <AnalyticsState isLive={isLive} label="operator" state={metrics}>
+      <div className="relative">
+        <InsightWidget insight={operatorInsight} label="Operators" />
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
         <StatCard
           icon={Users}
           label="Active Operators"
@@ -9244,6 +8928,7 @@ export function OperatorAnalytics() {
           label="Manifestos Filed"
           value={opKpis.manifestos.toLocaleString()}
           delta={opKpis.live ? kpiDelta(opKpis.mDelta) : ""}
+          deltaLabel="vs previous period"
           up={opKpis.mDelta >= 0}
         />
         <StatCard
@@ -9251,19 +8936,21 @@ export function OperatorAnalytics() {
           label="Divers Logged"
           value={opKpis.divers.toLocaleString()}
           delta={opKpis.live ? kpiDelta(opKpis.dDelta) : ""}
+          deltaLabel="vs previous period"
           up={opKpis.dDelta >= 0}
         />
         <StatCard
           icon={CreditCard}
           label="Revenue Generated"
-          value={`₱${Math.round(opKpis.revenue).toLocaleString()}`}
+          value={`\u20B1${Math.round(opKpis.revenue).toLocaleString()}`}
           delta={
             opKpis.live && opKpis.rDelta !== 0
-              ? `${opKpis.rDelta >= 0 ? "+" : "-"}₱${Math.round(
+              ? `${opKpis.rDelta >= 0 ? "+" : "-"}\u20B1${Math.round(
                   Math.abs(opKpis.rDelta),
                 ).toLocaleString()}`
               : ""
           }
+          deltaLabel="vs previous period"
           up={opKpis.rDelta >= 0}
         />
       </div>
@@ -9286,27 +8973,16 @@ export function OperatorAnalytics() {
                   />
                   <XAxis
                     type="number"
-                    stroke="var(--color-muted-foreground)"
-                    fontSize={12}
-                    tickLine={false}
-                    axisLine={false}
+                    {...chartAxisProps}
                   />
                   <YAxis
                     dataKey="name"
                     type="category"
-                    stroke="var(--color-muted-foreground)"
-                    fontSize={12}
-                    tickLine={false}
-                    axisLine={false}
+                    {...chartAxisProps}
                     width={110}
                   />
                   <Tooltip
-                    contentStyle={{
-                      background: "var(--color-card)",
-                      border: "1px solid var(--color-border)",
-                      borderRadius: 12,
-                      fontSize: 12,
-                    }}
+                    contentStyle={chartTooltipStyle}
                   />
                   <Bar
                     dataKey="manifestos"
@@ -9321,15 +8997,15 @@ export function OperatorAnalytics() {
           </div>
         </SectionCard>
 
-        <SectionCard title="Credits Used vs Manifestos">
+        <SectionCard title="Manifestos & Credits by Operator" sample={!isLive}>
           <div className="h-80">
             {isEmptyChartData(scaledOperatorActivity) ? (
               <ChartEmptyState className="h-80" />
             ) : (
               <ResponsiveContainer>
-                <LineChart
+                <ComposedChart
                   data={scaledOperatorActivity}
-                  margin={{ left: -12 }}
+                  margin={{ left: -12, right: 4 }}
                   onClick={(e) =>
                     e?.activePayload?.[0]?.payload &&
                     setDrillOperator(e.activePayload[0].payload)
@@ -9342,91 +9018,116 @@ export function OperatorAnalytics() {
                   />
                   <XAxis
                     dataKey="name"
-                    stroke="var(--color-muted-foreground)"
-                    fontSize={11}
-                    tickLine={false}
-                    axisLine={false}
+                    {...chartAxisProps}
                   />
                   <YAxis
-                    stroke="var(--color-muted-foreground)"
-                    fontSize={12}
-                    tickLine={false}
-                    axisLine={false}
+                    yAxisId="left"
+                    {...chartAxisProps}
+                  />
+                  <YAxis
+                    yAxisId="right"
+                    orientation="right"
+                    {...chartAxisProps}
                   />
                   <Tooltip
-                    contentStyle={{
-                      background: "var(--color-card)",
-                      border: "1px solid var(--color-border)",
-                      borderRadius: 12,
-                      fontSize: 12,
-                    }}
+                    contentStyle={chartTooltipStyle}
+                    formatter={(value: number, name: string) => [
+                      value.toLocaleString(),
+                      name,
+                    ]}
+                  />
+                  <Bar
+                    yAxisId="left"
+                    dataKey="manifestos"
+                    name="Manifestos"
+                    fill="var(--color-primary)"
+                    radius={[4, 4, 0, 0]}
+                    barSize={18}
                   />
                   <Line
+                    yAxisId="right"
                     type="monotone"
                     dataKey="credits"
-                    stroke="var(--color-primary)"
+                    name="Credits used"
+                    stroke="var(--color-chart-2)"
                     strokeWidth={2.5}
-                    dot={{ r: 4, fill: "var(--color-primary)" }}
+                    dot={{ r: 3, fill: "var(--color-chart-2)" }}
                   />
-                  <Line
-                    type="monotone"
-                    dataKey="manifestos"
-                    stroke="var(--color-primary-glow)"
-                    strokeWidth={2.5}
-                    dot={{ r: 4, fill: "var(--color-primary-glow)" }}
-                  />
-                </LineChart>
+                </ComposedChart>
               </ResponsiveContainer>
             )}
           </div>
         </SectionCard>
 
-        <SectionCard title="Operator Leaderboard" className="xl:col-span-2">
+        <SectionCard
+          title="Operator Leaderboard"
+          className="xl:col-span-2"
+          sample={!isLive}
+        >
           <Table>
             <TableHeader>
               <TableRow className="bg-secondary/50">
                 <TableHead>Operator</TableHead>
                 <TableHead>Manifestos</TableHead>
                 <TableHead>Credits Used</TableHead>
-                <TableHead>Utilization</TableHead>
+                <TableHead>Credit Utilization</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {scaledOperatorActivity.map((o) => (
-                <TableRow
-                  key={o.name}
-                  className="cursor-pointer hover:bg-secondary/50 transition-colors"
-                  onClick={() => setDrillOperator(o)}
-                >
-                  <TableCell className="font-medium">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        setFilters({
-                          section: "establishments",
-                          tab: "registered",
-                          q: o.name,
-                        });
-                      }}
-                      className="flex items-center gap-2 underline decoration-dotted underline-offset-2 hover:text-primary hover:decoration-solid transition-colors"
-                    >
-                      <Building2 className="size-4 text-primary" /> {o.name}
-                    </button>
-                  </TableCell>
-                  <TableCell>{o.manifestos}</TableCell>
-                  <TableCell>{o.credits.toLocaleString()}</TableCell>
-                  <TableCell>
-                    <div className="w-40 h-2 rounded-full bg-secondary overflow-hidden">
-                      <div
-                        className="h-full gradient-primary"
-                        style={{
-                          width: `${((o.manifestos / (scaledOperatorActivity[0]?.manifestos || 1)) * 100).toFixed(1)}%`,
-                        }}
-                      />
-                    </div>
+              {scaledOperatorActivity.length === 0 && (
+                <TableRow>
+                  <TableCell
+                    colSpan={4}
+                    className="text-center py-8 text-muted-foreground"
+                  >
+                    No operator activity for the selected period.
                   </TableCell>
                 </TableRow>
-              ))}
+              )}
+              {scaledOperatorActivity.map((o) => {
+                const util =
+                  o.purchased > 0
+                    ? Math.round((o.credits / o.purchased) * 100)
+                    : 0;
+                return (
+                  <TableRow
+                    key={o.name}
+                    className="cursor-pointer hover:bg-secondary/50 transition-colors"
+                    onClick={() => setDrillOperator(o)}
+                  >
+                    <TableCell className="font-medium">
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          setFilters({
+                            section: "establishments",
+                            tab: "registered",
+                            q: o.name,
+                          });
+                        }}
+                        className="flex items-center gap-2 underline decoration-dotted underline-offset-2 hover:text-primary hover:decoration-solid transition-colors"
+                      >
+                        <Building2 className="size-4 text-primary" /> {o.name}
+                      </button>
+                    </TableCell>
+                    <TableCell>{o.manifestos}</TableCell>
+                    <TableCell>{o.credits.toLocaleString()}</TableCell>
+                    <TableCell>
+                      <div className="flex items-center gap-2">
+                        <div className="w-32 h-2 rounded-full bg-secondary overflow-hidden">
+                          <div
+                            className="h-full gradient-primary"
+                            style={{ width: `${Math.min(100, util)}%` }}
+                          />
+                        </div>
+                        <span className="text-xs text-muted-foreground tabular-nums">
+                          {o.purchased > 0 ? `${util}%` : "—"}
+                        </span>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
             </TableBody>
           </Table>
         </SectionCard>
@@ -9450,11 +9151,10 @@ export function OperatorAnalytics() {
                     icon: CreditCard,
                   },
                   {
-                    label: "Utilization",
-                    value:
-                      drillOperator.credits > 0
-                        ? `${((drillOperator.manifestos / drillOperator.credits) * 100).toFixed(0)}%`
-                        : "—",
+                    label: "Credit Utilization",
+                    value: drillOperator.purchased
+                      ? `${Math.round((drillOperator.credits / drillOperator.purchased) * 100)}%`
+                      : "—",
                     icon: TrendingUp,
                   },
                 ]
@@ -9485,10 +9185,10 @@ export function OperatorAnalytics() {
                     </TableRow>
                     <TableRow>
                       <TableCell className="text-muted-foreground">
-                        Credits purchased
+                        Credits used
                       </TableCell>
                       <TableCell className="text-right font-medium">
-                        {drillOperator.credits.toLocaleString()}
+                        {(drillOperator.credits ?? 0).toLocaleString()}
                       </TableCell>
                     </TableRow>
                     <TableRow>
@@ -9496,11 +9196,7 @@ export function OperatorAnalytics() {
                         Credits remaining
                       </TableCell>
                       <TableCell className="text-right font-medium">
-                        {(drillOperator.remaining != null
-                          ? drillOperator.remaining
-                          : drillOperator.credits -
-                            Math.round(drillOperator.manifestos * 18.5)
-                        ).toLocaleString()}
+                        {(drillOperator.remaining ?? 0).toLocaleString()}
                       </TableCell>
                     </TableRow>
                     <TableRow>
@@ -9508,15 +9204,12 @@ export function OperatorAnalytics() {
                         Avg divers per manifest
                       </TableCell>
                       <TableCell className="text-right font-medium">
-                        {drillOperator.divers != null &&
-                        drillOperator.manifestos > 0
+                        {drillOperator.manifestos > 0
                           ? (
-                              drillOperator.divers / drillOperator.manifestos
+                              (drillOperator.divers ?? 0) /
+                              drillOperator.manifestos
                             ).toFixed(1)
-                          : (
-                              Math.round(drillOperator.manifestos * 7.2) /
-                              (drillOperator.manifestos || 1)
-                            ).toFixed(1)}
+                          : "0.0"}
                       </TableCell>
                     </TableRow>
                     <TableRow>
@@ -9524,12 +9217,7 @@ export function OperatorAnalytics() {
                         Revenue generated
                       </TableCell>
                       <TableCell className="text-right font-medium">
-                        ₱
-                        {Math.round(
-                          drillOperator.revenue != null
-                            ? drillOperator.revenue
-                            : drillOperator.manifestos * 4200,
-                        ).toLocaleString()}
+                        {`\u20B1${Math.round(drillOperator.revenue ?? 0).toLocaleString()}`}
                       </TableCell>
                     </TableRow>
                   </TableBody>
@@ -9549,27 +9237,18 @@ export function OperatorAnalytics() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {opManifests
-                      .filter((m: any) =>
-                        (m.operator ?? "").includes(
-                          drillOperator.name.split(" ")[0],
-                        ),
-                      )
-                      .slice(0, 5)
-                      .map((m) => (
-                        <TableRow key={m.id}>
-                          <TableCell className="font-mono text-xs">
-                            {m.id}
-                          </TableCell>
-                          <TableCell className="font-medium">
-                            {m.site}
-                          </TableCell>
-                          <TableCell>{m.divers}</TableCell>
-                          <TableCell className="text-muted-foreground">
-                            {m.date}
-                          </TableCell>
-                        </TableRow>
-                      ))}
+                    {(drillOperator.recent ?? []).map((row: any) => (
+                      <TableRow key={row.id}>
+                        <TableCell className="font-mono text-xs">
+                          {row.id}
+                        </TableCell>
+                        <TableCell className="font-medium">{row.site}</TableCell>
+                        <TableCell>{row.divers}</TableCell>
+                        <TableCell className="text-muted-foreground">
+                          {row.date}
+                        </TableCell>
+                      </TableRow>
+                    ))}
                   </TableBody>
                 </Table>
               </Card>
@@ -9577,274 +9256,156 @@ export function OperatorAnalytics() {
           )}
         </DrilldownDialog>
       </div>
-    </div>
+      </div>
+    </AnalyticsState>
   );
 }
 
 /* ------------------------------ REPORTS ------------------------------ */
-export function Reports() {
-  const {
-    visibleMonths,
-    globalDateFrom,
-    globalDateTo,
-    setRange: setGlobalRange,
-  } = useGlobalDateRange();
+export function Reports({ range: globalRange }: { range: DateRange }) {
   const [range, setRange] = useState("monthly");
-  const [dateFrom, setDateFrom] = useState(globalDateFrom);
-  const [dateTo, setDateTo] = useState(globalDateTo);
+  const [dateFrom, setDateFrom] = useState(globalRange.from);
+  const [dateTo, setDateTo] = useState(globalRange.to);
   const [generating, setGenerating] = useState(false);
-  const [reportData, setReportData] = useState<any[] | null>(null);
+  type ReportRow = {
+    period: string;
+    tourists: number;
+    operators: number;
+    manifestos: number;
+    dives: number;
+    revenue: number;
+  };
+  const [reportData, setReportData] = useState<ReportRow[] | null>(null);
+  const isLive = useLiveMode();
 
-  // Live sources (React Query cache — no extra fetch).
-  const liveTouristsRp = useTouristsLive();
-  const liveAppsRp = useOperatorApplicationsLive();
-  const liveManifestsRp = useManifestsLive();
-  const liveReceiptsRp = useReceiptsLive();
-  const rpLive = !!(
-    liveTouristsRp.data &&
-    liveAppsRp.data &&
-    liveManifestsRp.data &&
-    liveReceiptsRp.data
-  );
+  useEffect(() => {
+    setDateFrom(globalRange.from);
+    setDateTo(globalRange.to);
+    setReportData(null);
+  }, [globalRange.from, globalRange.to]);
+
+  const reportRange = useMemo<DateRange>(() => {
+    const resolved = resolveDateRange(
+      "custom",
+      dateFrom || globalRange.from,
+      dateTo || globalRange.to,
+    );
+    const grain = range === "daily" ? "day" : range === "weekly" ? "week" : "month";
+    return { ...resolved, grain };
+  }, [dateFrom, dateTo, globalRange.from, globalRange.to, range]);
+
+  const metrics = useMetrics("report", reportRange);
+  const m = metrics.data;
 
   const filteredTrends = useMemo(() => {
-    if (!rpLive) {
-      return monthlyTrends.filter((d) => visibleMonths.includes(d.m));
-    }
-    const tB = bucketByMonth(
-      liveTouristsRp.data ?? [],
-      (t: any) => t.registered ?? t.createdAt ?? "",
-    );
-    const mB = bucketByMonth(
-      liveManifestsRp.data ?? [],
-      (m: any) => m.date,
-      (m: any) => m.divers || 0,
-    );
-    return MONTHS.map((m, i) => ({
-      m,
-      tourists: tB[i]?.count ?? 0,
-      dives: mB[i]?.total ?? 0,
-    })).filter((d) => visibleMonths.includes(d.m));
-  }, [rpLive, visibleMonths, liveTouristsRp.data, liveManifestsRp.data]);
+    if (!m) return isLive ? [] : monthlyTrends;
+    return aggregateDaily(
+      { ...reportRange, grain: "month" },
+      m.daily,
+      (row) => row.date,
+      () => ({ dives: 0 }),
+      (acc, row) => {
+        acc.dives += row.divers;
+      },
+    ).map((bucket) => ({ m: bucket.label, dives: bucket.dives }));
+  }, [m, isLive, reportRange]);
 
-  const generateReport = async () => {
+  const generateReport = () => {
     setGenerating(true);
-    if (rpLive) {
-      // Real aggregation over live rows (no fake latency — instant).
-      const inRange = (d: string) => {
-        if (!d || d === "—") return false;
-        if (dateFrom && d < dateFrom) return false;
-        if (dateTo && d > dateTo) return false;
-        return true;
-      };
-      const tRows = liveTouristsRp.data!.filter((t: any) =>
-        inRange(t.registered ?? t.createdAt ?? ""),
-      );
-      const aRows = liveAppsRp.data!.filter((a: any) => inRange(a.submitted));
-      const mRows = liveManifestsRp.data!.filter((m: any) => inRange(m.date));
-      const rRows = liveReceiptsRp.data!.filter((r: any) => inRange(r.date));
-      const money = (n: number) => `₱${Math.round(n).toLocaleString()}`;
-      const year = new Date().getFullYear();
-      const tB = bucketByMonth(
-        tRows,
-        (t: any) => t.registered ?? t.createdAt ?? "",
-      );
-      const aB = bucketByMonth(aRows, (a: any) => a.submitted);
-      const mB = bucketByMonth(
-        mRows,
-        (m: any) => m.date,
-        (m: any) => m.divers || 0,
-      );
-      const rB = bucketByMonth(
-        rRows,
-        (r: any) => r.date,
-        (r: any) => r.amountNum || 0,
-      );
-      const idx = (m: string) => MONTHS.indexOf(m as (typeof MONTHS)[number]);
-      const data =
-        range === "daily"
-          ? bucketByDay(
-              tRows,
-              (t: any) => t.registered ?? t.createdAt ?? "",
-            ).map((b, i) => {
-              const aD = bucketByDay(aRows, (a: any) => a.submitted);
-              const mD = bucketByDay(
-                mRows,
-                (m: any) => m.date,
-                (m: any) => m.divers || 0,
-              );
-              const rD = bucketByDay(
-                rRows,
-                (r: any) => r.date,
-                (r: any) => r.amountNum || 0,
-              );
-              return {
-                period: b.label,
-                tourists: b.count,
-                operators: aD[i]?.count ?? 0,
-                manifestos: mD[i]?.count ?? 0,
-                dives: mD[i]?.total ?? 0,
-                revenue: money(rD[i]?.total ?? 0),
-              };
-            })
-          : range === "weekly"
-            ? bucketByWeek(
-                tRows,
-                (t: any) => t.registered ?? t.createdAt ?? "",
-              ).map((b, i) => {
-                const aW = bucketByWeek(aRows, (a: any) => a.submitted);
-                const mW = bucketByWeek(
-                  mRows,
-                  (m: any) => m.date,
-                  (m: any) => m.divers || 0,
-                );
-                const rW = bucketByWeek(
-                  rRows,
-                  (r: any) => r.date,
-                  (r: any) => r.amountNum || 0,
-                );
-                return {
-                  period: b.label,
-                  tourists: b.count,
-                  operators: aW[i]?.count ?? 0,
-                  manifestos: mW[i]?.count ?? 0,
-                  dives: mW[i]?.total ?? 0,
-                  revenue: money(rW[i]?.total ?? 0),
-                };
-              })
-            : visibleMonths.map((m) => {
-                const mi = idx(m);
-                return {
-                  period: `${m} ${year}`,
-                  tourists: tB[mi]?.count ?? 0,
-                  operators: aB[mi]?.count ?? 0,
-                  manifestos: mB[mi]?.count ?? 0,
-                  dives: mB[mi]?.total ?? 0,
-                  revenue: money(rB[mi]?.total ?? 0),
-                };
-              });
-      setReportData(data);
+    if (isLive) {
+      if (!m) {
+        setGenerating(false);
+        toast.error("Report metrics are still loading");
+        return;
+      }
+      const rows = aggregateDaily(
+        reportRange,
+        m.daily,
+        (row) => row.date,
+        () => ({ tourists: 0, operators: 0, manifestos: 0, dives: 0, revenue: 0 }),
+        (acc, row) => {
+          acc.tourists += row.tourists;
+          acc.operators += row.operators;
+          acc.manifestos += row.manifestos;
+          acc.dives += row.divers;
+          acc.revenue += row.revenue;
+        },
+      ).map((bucket) => ({
+        period: bucket.label,
+        tourists: bucket.tourists,
+        operators: bucket.operators,
+        manifestos: bucket.manifestos,
+        dives: bucket.dives,
+        revenue: bucket.revenue,
+      }));
+      setReportData(rows);
       setGenerating(false);
       toast.success(`${range} report generated`, {
-        description: `${data.length} periods included (live data).`,
+        description: `${rows.length} periods included.`,
       });
       return;
     }
-    await new Promise((r) => setTimeout(r, 1200));
-    const data =
-      range === "daily"
-        ? [
-            {
-              period: "Jul 25",
-              tourists: 42,
-              operators: 8,
-              manifestos: 18,
-              dives: 64,
-              revenue: "₱126,400",
-            },
-            {
-              period: "Jul 24",
-              tourists: 38,
-              operators: 7,
-              manifestos: 15,
-              dives: 56,
-              revenue: "₱112,200",
-            },
-            {
-              period: "Jul 23",
-              tourists: 35,
-              operators: 9,
-              manifestos: 20,
-              dives: 72,
-              revenue: "₱138,800",
-            },
-          ]
-        : range === "weekly"
-          ? [
-              {
-                period: "Week 30",
-                tourists: 280,
-                operators: 12,
-                manifestos: 95,
-                dives: 380,
-                revenue: "₱892,000",
-              },
-              {
-                period: "Week 29",
-                tourists: 245,
-                operators: 11,
-                manifestos: 82,
-                dives: 328,
-                revenue: "₱765,000",
-              },
-              {
-                period: "Week 28",
-                tourists: 310,
-                operators: 14,
-                manifestos: 104,
-                dives: 416,
-                revenue: "₱948,000",
-              },
-            ]
-          : [
-              {
-                period: "Jul 2026",
-                tourists: 1240,
-                operators: 18,
-                manifestos: 420,
-                dives: 1680,
-                revenue: "₱3,842,000",
-              },
-              {
-                period: "Jun 2026",
-                tourists: 1180,
-                operators: 17,
-                manifestos: 398,
-                dives: 1592,
-                revenue: "₱3,610,000",
-              },
-              {
-                period: "May 2026",
-                tourists: 1050,
-                operators: 16,
-                manifestos: 360,
-                dives: 1440,
-                revenue: "₱3,280,000",
-              },
-            ];
+
+    const demoRows: Record<string, ReportRow[]> = {
+      daily: [
+        { period: "Jul 25", tourists: 42, operators: 8, manifestos: 18, dives: 64, revenue: 126400 },
+        { period: "Jul 24", tourists: 38, operators: 7, manifestos: 15, dives: 56, revenue: 112200 },
+        { period: "Jul 23", tourists: 35, operators: 9, manifestos: 20, dives: 72, revenue: 138800 },
+      ],
+      weekly: [
+        { period: "Week 30", tourists: 280, operators: 12, manifestos: 95, dives: 380, revenue: 892000 },
+        { period: "Week 29", tourists: 245, operators: 11, manifestos: 82, dives: 328, revenue: 765000 },
+        { period: "Week 28", tourists: 310, operators: 14, manifestos: 104, dives: 416, revenue: 948000 },
+      ],
+      monthly: [
+        { period: "Jul 2026", tourists: 1240, operators: 18, manifestos: 420, dives: 1680, revenue: 3842000 },
+        { period: "Jun 2026", tourists: 1180, operators: 17, manifestos: 398, dives: 1592, revenue: 3610000 },
+        { period: "May 2026", tourists: 1050, operators: 16, manifestos: 360, dives: 1440, revenue: 3280000 },
+      ],
+    };
+    const data = demoRows[range] ?? demoRows.monthly;
     setReportData(data);
     setGenerating(false);
-    toast.success(`${range} report generated`, {
-      description: `${data.length} periods included.`,
+    toast.success(`${range} sample report generated`, {
+      description: "Connect Supabase for live report data.",
     });
   };
 
   const exportReport = (fmt: string) => {
     if (!reportData) return toast.error("Generate a report first");
-    if (fmt === "CSV") {
-      const header = "Period,Tourists,Operators,Manifestos,Dives,Revenue";
-      const rows = reportData.map(
-        (r) =>
-          `${r.period},${r.tourists},${r.operators},${r.manifestos},${r.dives},"${r.revenue}"`,
-      );
-      const csv = [header, ...rows].join("\n");
-      const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement("a");
-      a.href = url;
-      a.download = `report-${range}-${dateFrom || "all"}.csv`;
-      a.click();
-      URL.revokeObjectURL(url);
-      toast.success("Report exported", { description: "CSV downloaded." });
-    } else {
-      toast.success(`Exported as ${fmt}`, {
-        description: "File saved to your device.",
-      });
+    if (fmt !== "CSV") {
+      return toast.info("CSV is the only supported export");
     }
+    const header = "Period,Tourists,Operators,Manifestos,Dives,Revenue";
+    const rows = reportData.map(
+      (row) =>
+        `${row.period},${row.tourists},${row.operators},${row.manifestos},${row.dives},${row.revenue}`,
+    );
+    const csv = [header, ...rows].join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `report-${range}-${dateFrom || "all"}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+    toast.success("Report exported", { description: "CSV downloaded." });
   };
 
   return (
     <div className="space-y-6">
+      {isLive && metrics.isPending && (
+        <p
+          role="status"
+          aria-live="polite"
+          className="text-sm text-muted-foreground"
+        >
+          Loading report metrics&hellip;
+        </p>
+      )}
+      {isLive && metrics.isError && (
+        <MetricsError label="report" state={metrics} compact />
+      )}
       <Card className="p-6 shadow-elegant">
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
@@ -9858,7 +9419,7 @@ export function Reports() {
           <Button
             className="gradient-primary text-primary-foreground shrink-0"
             onClick={generateReport}
-            disabled={generating}
+            disabled={generating || (isLive && metrics.isPending)}
           >
             {generating ? (
               <Loader2 className="size-4 mr-1.5 animate-spin" />
@@ -9906,18 +9467,6 @@ export function Reports() {
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
         {[
           {
-            icon: ImageIcon,
-            label: "Export as PNG",
-            desc: "Share a visual snapshot",
-            fmt: "PNG",
-          },
-          {
-            icon: FileText,
-            label: "Export as PDF",
-            desc: "Formal, print-ready summary",
-            fmt: "PDF",
-          },
-          {
             icon: FileDown,
             label: "Export as CSV",
             desc: "Raw data for analysis",
@@ -9962,7 +9511,7 @@ export function Reports() {
                   <TableCell>{r.manifestos.toLocaleString()}</TableCell>
                   <TableCell>{r.dives.toLocaleString()}</TableCell>
                   <TableCell className="text-right font-mono">
-                    {r.revenue}
+                    {`\u20B1${r.revenue.toLocaleString()}`}
                   </TableCell>
                 </TableRow>
               ))}
@@ -9999,24 +9548,13 @@ export function Reports() {
                 />
                 <XAxis
                   dataKey="m"
-                  stroke="var(--color-muted-foreground)"
-                  fontSize={12}
-                  tickLine={false}
-                  axisLine={false}
+                  {...chartAxisProps}
                 />
                 <YAxis
-                  stroke="var(--color-muted-foreground)"
-                  fontSize={12}
-                  tickLine={false}
-                  axisLine={false}
+                  {...chartAxisProps}
                 />
                 <Tooltip
-                  contentStyle={{
-                    background: "var(--color-card)",
-                    border: "1px solid var(--color-border)",
-                    borderRadius: 12,
-                    fontSize: 12,
-                  }}
+                  contentStyle={chartTooltipStyle}
                 />
                 <Area
                   type="monotone"

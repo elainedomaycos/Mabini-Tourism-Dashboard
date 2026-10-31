@@ -32,7 +32,13 @@ import {
   DialogTitle,
   DialogFooter,
 } from "@/components/ui/dialog";
-import { SectionCard, StatusBadge, Field, Reveal } from "@/components/shared";
+import {
+  SectionCard,
+  StatusBadge,
+  Field,
+  Reveal,
+  TableSkeletonRows,
+} from "@/components/shared";
 import { MABINI_BARANGAYS } from "@/lib/barangays";
 import {
   Table,
@@ -46,6 +52,7 @@ import { useFilters, pushAuditLog, DataSourceBadge } from "@/routes/index";
 import { requireLiveSession } from "@/lib/staff-auth";
 import {
   useLiveMode,
+  useLiveList,
   useEstablishmentsLive,
   setEstablishmentSuspended,
   useInvalidateLive,
@@ -449,10 +456,15 @@ export function Establishments() {
   const isLive = useLiveMode();
   const liveEstablishments = useEstablishmentsLive();
   const invalidateEst = useInvalidateLive();
-  const isLiveData = isLive && !!liveEstablishments.data;
+  const establishmentsSource = useLiveList(
+    isLive,
+    liveEstablishments,
+    mockData,
+  );
+  const establishmentRows = establishmentsSource.rows;
   const data = useMemo(
-    () => (liveEstablishments.data ?? mockData).map(toEstablishmentView),
-    [liveEstablishments.data, mockData]
+    () => establishmentRows.map(toEstablishmentView),
+    [establishmentRows]
   );
   const [opBusy, setOpBusy] = useState<Record<string, boolean>>({});
   useEffect(() => {
@@ -572,9 +584,9 @@ export function Establishments() {
       <Reveal>
         <div className="flex items-center gap-2 mb-3">
           <DataSourceBadge
-            live={isLiveData}
+            live={isLive}
             isError={liveEstablishments.isError}
-            isLoading={liveEstablishments.isFetching}
+            isLoading={establishmentsSource.isLoading}
           />
         </div>
         <SectionCard
@@ -614,7 +626,15 @@ export function Establishments() {
             </div>
           }
         >
-          {filtered.length === 0 ? (
+          {establishmentsSource.isLoading ? (
+            <div className="overflow-x-auto">
+              <Table>
+                <TableBody>
+                  <TableSkeletonRows rows={6} cols={8} />
+                </TableBody>
+              </Table>
+            </div>
+          ) : filtered.length === 0 ? (
             <div className="text-center py-12 text-muted-foreground text-sm">
               No establishments match your filters.
             </div>

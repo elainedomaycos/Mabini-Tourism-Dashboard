@@ -80,9 +80,19 @@ export function EstablishmentsPage() {
             <StatCard
               icon={Building2}
               label="Registered Establishments"
-              value={regCountLive ? String(regCount) : "12"}
+              value={
+                isLive && liveEst.isPending
+                  ? "—"
+                  : regCountLive
+                    ? String(regCount)
+                    : "12"
+              }
               delta={
-                regCountLive ? `${regDiff >= 0 ? "+" : ""}${regDiff}` : "+1"
+                isLive && liveEst.isPending
+                  ? ""
+                  : regCountLive
+                    ? `${regDiff >= 0 ? "+" : ""}${regDiff}`
+                    : "+1"
               }
               up={regCountLive ? regDiff >= 0 : true}
             />
@@ -100,11 +110,19 @@ export function EstablishmentsPage() {
                 <StatCard
                   icon={Building2}
                   label="Pending Applications"
-                  value={isLiveData ? String(pendingCount) : "5"}
+                  value={
+                    isLive && liveApps.isPending
+                      ? "—"
+                      : isLiveData
+                        ? String(pendingCount)
+                        : "5"
+                  }
                   delta={
-                    isLiveData
-                      ? `${monthDiff >= 0 ? "+" : ""}${monthDiff}`
-                      : "+2"
+                    isLive && liveApps.isPending
+                      ? ""
+                      : isLiveData
+                        ? `${monthDiff >= 0 ? "+" : ""}${monthDiff}`
+                        : "+2"
                   }
                   up={isLiveData ? monthDiff >= 0 : true}
                 />
@@ -120,7 +138,13 @@ export function EstablishmentsPage() {
                 <StatCard
                   icon={Building2}
                   label="Active Operators"
-                  value={isLiveData ? String(approvedCount) : "8"}
+                  value={
+                    isLive && liveApps.isPending
+                      ? "—"
+                      : isLiveData
+                        ? String(approvedCount)
+                        : "8"
+                  }
                   delta=""
                 />
               </button>

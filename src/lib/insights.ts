@@ -19,12 +19,12 @@ export interface OverviewFactsInput {
   /** Registered tourists in the active window. */
   tourists: number;
   activeIds: number;
-  /** Month-over-month change in tourist registrations. */
+  /** Period-over-period change in tourist registrations. */
   touristDelta: number;
   /** Dives logged today, and the change vs yesterday. */
   todayDives: number;
   dayDelta: number;
-  /** Revenue in the current month, and the change vs last month. */
+  /** Revenue in the current period, and the change vs the previous period. */
   monthRevenue: number;
   revenueDelta: number;
   pendingReceipts: number;
@@ -122,7 +122,7 @@ export function buildOverviewInsight(
   const seed = f.seed;
 
   // ---- Description -------------------------------------------------------
-  // "held steady by 0 versus last month" reads wrong — zero delta gets no
+  // "held steady by 0 versus the previous period" reads wrong — zero delta gets no
   // magnitude clause at all.
   const arrivalClause =
     f.touristDelta === 0
@@ -149,9 +149,9 @@ export function buildOverviewInsight(
     clauses.push(
       pick(
         [
-          `Tourist registrations ${arrivalVerb} ${signed(f.touristDelta)} month-over-month to ${f.tourists.toLocaleString("en-PH")}.`,
-          `Across the current window, ${f.tourists.toLocaleString("en-PH")} tourists are registered — ${arrivalClause} versus last month.`,
-          `${f.tourists.toLocaleString("en-PH")} tourists on record, with registrations ${arrivalVerb} ${signed(f.touristDelta)} month-over-month.`,
+          `Tourist registrations ${arrivalVerb} ${signed(f.touristDelta)} period-over-period to ${f.tourists.toLocaleString("en-PH")}.`,
+          `Across the current window, ${f.tourists.toLocaleString("en-PH")} tourists are registered — ${arrivalClause} versus the previous period.`,
+          `${f.tourists.toLocaleString("en-PH")} tourists on record, with registrations ${arrivalVerb} ${signed(f.touristDelta)} period-over-period.`,
         ],
         seed,
       ),
@@ -160,21 +160,21 @@ export function buildOverviewInsight(
       f.todayDives > 0
         ? pick(
             [
-              `${f.todayDives} ${plural(f.todayDives, "dive is", "dives are")} logged today, ${f.dayDelta >= 0 ? "ahead" : "behind"} of the same point yesterday.`,
-              `Today has ${f.todayDives} logged ${plural(f.todayDives, "dive", "dives")}, ${f.dayDelta >= 0 ? "tracking above" : "trailing"} yesterday.`,
-              `${f.todayDives} ${plural(f.todayDives, "dive", "dives")} on the water today${dayDeltaSuffix}.`,
+              `${f.todayDives} ${plural(f.todayDives, "diver is", "divers are")} logged today, ${f.dayDelta >= 0 ? "ahead" : "behind"} of the same point yesterday.`,
+              `Today has ${f.todayDives} logged ${plural(f.todayDives, "diver", "divers")}, ${f.dayDelta >= 0 ? "tracking above" : "trailing"} yesterday.`,
+              `${f.todayDives} ${plural(f.todayDives, "diver", "divers")} on the water today${dayDeltaSuffix}.`,
             ],
             seed + 1,
           )
-        : "No dives have been logged yet today.",
+        : "No divers have been logged yet today.",
     );
     if (f.monthRevenue > 0) {
       clauses.push(
         pick(
           [
-            `Revenue is tracking at ${peso(f.monthRevenue)} this month, ${f.revenueDelta >= 0 ? "up" : "down"} ${peso(Math.abs(f.revenueDelta))}.`,
-            `${peso(f.monthRevenue)} collected this month — ${f.revenueDelta >= 0 ? "an increase" : "a decline"} of ${peso(Math.abs(f.revenueDelta))}.`,
-            `Month-to-date revenue sits at ${peso(f.monthRevenue)}, ${f.revenueDelta >= 0 ? "ahead by" : "behind by"} ${peso(Math.abs(f.revenueDelta))}.`,
+            `Verified revenue is tracking at ${peso(f.monthRevenue)} this period, ${f.revenueDelta >= 0 ? "up" : "down"} ${peso(Math.abs(f.revenueDelta))}.`,
+            `${peso(f.monthRevenue)} verified this period — ${f.revenueDelta >= 0 ? "an increase" : "a decline"} of ${peso(Math.abs(f.revenueDelta))}.`,
+            `Period-to-date verified revenue sits at ${peso(f.monthRevenue)}, ${f.revenueDelta >= 0 ? "ahead by" : "behind by"} ${peso(Math.abs(f.revenueDelta))}.`,
           ],
           seed + 2,
         ),
@@ -182,7 +182,7 @@ export function buildOverviewInsight(
     }
     if (f.topDiveType && f.topDiveTypeShare > 0) {
       clauses.push(
-        `${f.topDiveType} accounts for ${Math.round(f.topDiveTypeShare)}% of recorded dive types.`,
+        `${f.topDiveType} accounts for ${Math.round(f.topDiveTypeShare)}% of recorded manifests.`,
       );
     }
   } else {
@@ -255,7 +255,7 @@ export function buildOverviewInsight(
     recommendations.push({
       id: "revenue-softness",
       title: "Revenue is down while arrivals hold steady",
-      detail: `Worth reviewing pass pricing and uncollected receipts — ${peso(Math.abs(f.revenueDelta))} behind last month.`,
+      detail: `Worth reviewing pass pricing and uncollected receipts — ${peso(Math.abs(f.revenueDelta))} behind the previous period.`,
       severity: "medium",
       section: "dive-pass",
     });
@@ -314,7 +314,7 @@ function shareSentence(label: string, share: number): string | null {
 export interface TouristInsightInput {
   live: boolean;
   tourists: number;
-  /** Month-over-month change in registrations. */
+  /** Period-over-period change in registrations. */
   registrationsDelta: number;
   nationalities: number;
   /** Share of the single most common nationality (0-100), 0 when unknown. */
@@ -348,9 +348,9 @@ export function buildTouristInsight(
     clauses.push(
       pick(
         [
-          `${t.tourists.toLocaleString("en-PH")} tourists across ${t.nationalities} ${plural(t.nationalities, "nationality", "nationalities")}; registrations ${trendWord(t.registrationsDelta)} ${trendAmount(t.registrationsDelta)} month-over-month.`,
-          `Registrations ${trendWord(t.registrationsDelta)} ${trendAmount(t.registrationsDelta)} this month, with ${t.tourists.toLocaleString("en-PH")} tourists spanning ${t.nationalities} ${plural(t.nationalities, "nationality", "nationalities")}.`,
-          `The tourist base stands at ${t.tourists.toLocaleString("en-PH")} across ${t.nationalities} ${plural(t.nationalities, "nationality", "nationalities")}, ${trendWord(t.registrationsDelta)} ${trendAmount(t.registrationsDelta)} versus last month.`,
+          `${t.tourists.toLocaleString("en-PH")} tourists across ${t.nationalities} ${plural(t.nationalities, "nationality", "nationalities")}; registrations ${trendWord(t.registrationsDelta)} ${trendAmount(t.registrationsDelta)} period-over-period.`,
+          `Registrations ${trendWord(t.registrationsDelta)} ${trendAmount(t.registrationsDelta)} this period, with ${t.tourists.toLocaleString("en-PH")} tourists spanning ${t.nationalities} ${plural(t.nationalities, "nationality", "nationalities")}.`,
+          `The tourist base stands at ${t.tourists.toLocaleString("en-PH")} across ${t.nationalities} ${plural(t.nationalities, "nationality", "nationalities")}, ${trendWord(t.registrationsDelta)} ${trendAmount(t.registrationsDelta)} versus the previous period.`,
         ],
         t.seed,
       ),
@@ -410,7 +410,7 @@ export function buildTouristInsight(
 export interface DiveActivityInsightInput {
   live: boolean;
   totalDives: number;
-  /** Month-over-month change in divers. */
+  /** Period-over-period change in divers. */
   divesDelta: number;
   topType: string | null;
   topTypeShare: number;
@@ -438,9 +438,9 @@ export function buildDiveActivityInsight(
     clauses.push(
       pick(
         [
-          `${d.totalDives.toLocaleString("en-PH")} ${plural(d.totalDives, "diver", "divers")} logged across ${d.sitesUsed} ${plural(d.sitesUsed, "site", "sites")}, ${trendWord(d.divesDelta)} ${trendAmount(d.divesDelta)} month-over-month.`,
-          `Dive activity ${trendWord(d.divesDelta)} ${trendAmount(d.divesDelta)} this month, totalling ${d.totalDives.toLocaleString("en-PH")} ${plural(d.totalDives, "diver", "divers")}.`,
-          `${d.totalDives.toLocaleString("en-PH")} ${plural(d.totalDives, "diver", "divers")} recorded across ${d.sitesUsed} ${plural(d.sitesUsed, "site", "sites")}, ${trendWord(d.divesDelta)} ${trendAmount(d.divesDelta)} versus last month.`,
+          `${d.totalDives.toLocaleString("en-PH")} ${plural(d.totalDives, "diver", "divers")} logged across ${d.sitesUsed} ${plural(d.sitesUsed, "site", "sites")}, ${trendWord(d.divesDelta)} ${trendAmount(d.divesDelta)} period-over-period.`,
+          `Diver activity ${trendWord(d.divesDelta)} ${trendAmount(d.divesDelta)} this period, totalling ${d.totalDives.toLocaleString("en-PH")} ${plural(d.totalDives, "diver", "divers")}.`,
+          `${d.totalDives.toLocaleString("en-PH")} ${plural(d.totalDives, "diver", "divers")} recorded across ${d.sitesUsed} ${plural(d.sitesUsed, "site", "sites")}, ${trendWord(d.divesDelta)} ${trendAmount(d.divesDelta)} versus the previous period.`,
         ],
         d.seed,
       ),
@@ -467,7 +467,7 @@ export function buildDiveActivityInsight(
   if (d.topType && d.topTypeShare >= 65 && d.sitesUsed > 2) {
     recs.push({
       id: "type-concentration",
-      title: `${Math.round(d.topTypeShare)}% of dives are ${d.topType}`,
+      title: `${Math.round(d.topTypeShare)}% of manifests are ${d.topType}`,
       detail: `Only ${d.sitesUsed} sites are in use — nudging groups toward other ${plural(
         d.sitesUsed,
         "site",
@@ -488,7 +488,7 @@ export function buildDiveActivityInsight(
 export interface DivePassInsightInput {
   live: boolean;
   revenue: number;
-  /** Month-over-month revenue change. */
+  /** Period-over-period revenue change. */
   revenueDelta: number;
   /** Passes sold and still available. */
   passesSold: number;
@@ -519,9 +519,9 @@ export function buildDivePassInsight(
     clauses.push(
       pick(
         [
-          `Revenue stands at ${peso(p.revenue)} this month, ${trendWord(p.revenueDelta)} ${peso(Math.abs(p.revenueDelta))} — ${Math.round(usedShare)}% of issued passes are in use.`,
-          `${peso(p.revenue)} collected month-to-date (${signed(p.revenueDelta)}), with ${Math.round(usedShare)}% of passes consumed.`,
-          `Pass utilisation is at ${Math.round(usedShare)}% on ${peso(p.revenue)} in revenue, ${trendWord(p.revenueDelta)} ${peso(Math.abs(p.revenueDelta))} month-over-month.`,
+          `Verified revenue stands at ${peso(p.revenue)} this period, ${trendWord(p.revenueDelta)} ${peso(Math.abs(p.revenueDelta))} — ${Math.round(usedShare)}% of issued passes are in use.`,
+          `${peso(p.revenue)} verified period-to-date (${signed(p.revenueDelta)}), with ${Math.round(usedShare)}% of passes consumed.`,
+          `Pass utilisation is at ${Math.round(usedShare)}% on ${peso(p.revenue)} in verified revenue, ${trendWord(p.revenueDelta)} ${peso(Math.abs(p.revenueDelta))} period-over-period.`,
         ],
         p.seed,
       ),
@@ -547,7 +547,7 @@ export function buildDivePassInsight(
   if (p.passesRemaining > 0 && p.revenueDelta < 0) {
     recs.push({
       id: "revenue-softness",
-      title: `Revenue is down ${peso(Math.abs(p.revenueDelta))}`,
+      title: `Verified revenue is down ${peso(Math.abs(p.revenueDelta))}`,
       detail:
         "With passes still unsold, revisit pricing or run a mid-season promotion.",
       severity: "medium",

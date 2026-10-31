@@ -1,5 +1,4 @@
 import { useMemo } from "react";
-import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import {
   Table,
@@ -10,27 +9,30 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Progress } from "@/components/ui/progress";
-import { SectionCard, StatCard, Reveal } from "@/components/shared";
+import {
+  SectionCard,
+  StatCard,
+  Reveal,
+  chartAxisProps,
+  chartTooltipStyle,
+} from "@/components/shared";
+import { AnalyticsState } from "@/components/AnalyticsState";
 import {
   ChartEmptyState,
   isEmptyChartData,
 } from "@/components/ChartEmptyState";
-import { Building2, MapPin, Shield, Star, Download } from "lucide-react";
-import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
-import { useLiveMode, useEstablishmentsLive, useOperatorApplicationsLive } from "@/lib/queries";
+import { Building2, MapPin, Shield } from "lucide-react";
+import { useLiveMode } from "@/lib/queries";
 import { InsightWidget } from "@/components/InsightWidget";
 import { buildEstablishmentInsight } from "@/lib/insights";
+import { useMetrics } from "@/lib/metrics";
+import type { DateRange } from "@/lib/period";
 import {
   ResponsiveContainer,
   BarChart,
   Bar,
   ComposedChart,
   Line,
-  ScatterChart,
-  Scatter,
-  ZAxis,
-  ReferenceLine,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -38,8 +40,6 @@ import {
   PieChart,
   Pie,
   Cell,
-  RadialBarChart,
-  RadialBar,
 } from "recharts";
 
 const CHART_COLORS = [
@@ -73,13 +73,6 @@ const activityLevels = [
   { name: "Bluefin", manifestos: 45, credits: 920 },
   { name: "Aqua Ventures", manifestos: 38, credits: 780 },
   { name: "Nautilus", manifestos: 29, credits: 600 },
-];
-
-const ecoRatingDistribution = [
-  { rating: "4.5-5.0", count: 4 },
-  { rating: "4.0-4.4", count: 5 },
-  { rating: "3.5-3.9", count: 2 },
-  { rating: "3.0-3.4", count: 1 },
 ];
 
 const topEstablishments = [
@@ -141,211 +134,148 @@ const topEstablishments = [
   },
 ];
 
-const revenueFlow = [
-  { name: "Deep Blue", manifestos: 128, credits: 2400, revenue: 15360 },
-  { name: "Reef Riders", manifestos: 98, credits: 1860, revenue: 11760 },
-  { name: "Coral Coast", manifestos: 84, credits: 1620, revenue: 10080 },
-  { name: "Manta Exp.", manifestos: 71, credits: 1440, revenue: 8520 },
-  { name: "Turtle Divers", manifestos: 56, credits: 1080, revenue: 6720 },
-  { name: "Bluefin", manifestos: 45, credits: 920, revenue: 5400 },
-];
-
-const ecoMatrix = [
-  { name: "Deep Blue", eco: 4.8, manifestos: 128, credits: 2400, status: "Active" },
-  { name: "Reef Riders", eco: 4.5, manifestos: 98, credits: 1860, status: "Active" },
-  { name: "Coral Coast", eco: 4.7, manifestos: 84, credits: 1620, status: "Active" },
-  { name: "Manta Exp.", eco: 4.3, manifestos: 71, credits: 1440, status: "Active" },
-  { name: "Turtle Divers", eco: 4.6, manifestos: 56, credits: 1080, status: "Active" },
-  { name: "Bluefin", eco: 4.2, manifestos: 45, credits: 920, status: "Active" },
-  { name: "Aqua Ventures", eco: 4.1, manifestos: 38, credits: 780, status: "Active" },
-  { name: "Nautilus", eco: 3.9, manifestos: 29, credits: 600, status: "Expired" },
-];
-
 const TOTAL = establishmentsByBarangay.reduce((a, b) => a + b.count, 0);
 const ACTIVE_PERMITS =
   permitStatus.find((p) => p.status === "Active")?.count ?? 0;
-const AVG_ECO =
-  ecoRatingDistribution.reduce(
-    (a, b) => a + parseFloat(b.rating.split("-")[1]) * b.count,
-    0,
-  ) / ecoRatingDistribution.reduce((a, b) => a + b.count, 0);
 const TOP_BARANGAY = establishmentsByBarangay.sort(
   (a, b) => b.count - a.count,
 )[0].barangay;
 
-const tooltipStyle = {
-  background: "var(--color-card)",
-  border: "1px solid var(--color-border)",
-  borderRadius: 12,
-  fontSize: 12,
-};
-
-function StarRating({ value }: { value: number }) {
-  return (
-    <span className="inline-flex items-center gap-0.5">
-      {Array.from({ length: 5 }, (_, i) => (
-        <Star
-          key={i}
-          className={`size-3.5 ${i < Math.round(value) ? "fill-warning text-warning" : "text-muted-foreground/30"}`}
-        />
-      ))}
-      <span className="ml-1 text-xs font-medium">{value.toFixed(1)}</span>
-    </span>
-  );
-}
-
-export function EstablishmentAnalytics() {
+export function EstablishmentAnalytics({ range }: { range: DateRange }) {
   const isLive = useLiveMode();
-  const liveEst = useEstablishmentsLive();
-  const liveApps = useOperatorApplicationsLive();
-  const rows = liveEst.data;
-  const isLiveData = isLive && !!rows;
+  const isDemo = !isLive;
+  const metrics = useMetrics("establishment", range);
+  const m = metrics.data;
+  const isLiveData = m !== undefined;
+  const rows = useMemo(() => m?.establishments ?? [], [m]);
 
   const byBarangayData = useMemo(() => {
-    if (!isLiveData || !rows) return establishmentsByBarangay;
+    if (!m) return isDemo ? establishmentsByBarangay : [];
     const map = new Map<string, number>();
-    for (const r of rows) {
-      const b = r.barangay && r.barangay !== "—" ? r.barangay : "Unspecified";
-      map.set(b, (map.get(b) ?? 0) + 1);
+    for (const row of rows) {
+      const location = row.location.trim() || "Unspecified";
+      map.set(location, (map.get(location) ?? 0) + 1);
     }
     return [...map.entries()]
       .map(([barangay, count]) => ({ barangay, count }))
       .sort((a, b) => b.count - a.count);
-  }, [isLiveData, rows]);
+  }, [m, isDemo, rows]);
+
+  const permitStatusData = useMemo(() => {
+    if (!m) return isDemo ? permitStatus : [];
+    const map = new Map<string, number>();
+    for (const row of rows) {
+      const status = row.status || "Unknown";
+      map.set(status, (map.get(status) ?? 0) + 1);
+    }
+    return [...map.entries()].map(([status, count]) => ({ status, count }));
+  }, [m, isDemo, rows]);
 
   const activityData = useMemo(() => {
-    if (!isLiveData || !rows) return activityLevels;
+    if (!m) return isDemo ? activityLevels : [];
     return [...rows]
-      .sort((a, b) => b.totalManifestos - a.totalManifestos)
+      .sort((a, b) => b.manifestos - a.manifestos)
       .slice(0, 8)
-      .map((r) => ({
-        name: r.name,
-        manifestos: r.totalManifestos,
-        credits: r.creditBalance,
+      .map((row) => ({
+        name: row.name,
+        manifestos: row.manifestos,
+        credits: row.creditBalance,
       }));
-  }, [isLiveData, rows]);
+  }, [m, isDemo, rows]);
 
   const topEstData = useMemo<
     Array<{
       name: string;
       manifestos: number;
-      rating: number | null;
-      ecoRating: number | null;
       status: string;
     }>
   >(() => {
-    if (!isLiveData || !rows) return topEstablishments;
+    if (!m) return isDemo ? topEstablishments : [];
     return [...rows]
-      .sort((a, b) => b.totalManifestos - a.totalManifestos)
+      .sort((a, b) => b.manifestos - a.manifestos)
       .slice(0, 8)
-      .map((r) => ({
-        name: r.name,
-        manifestos: r.totalManifestos,
-        rating: null,
-        ecoRating: null,
-        status: r.status,
+      .map((row) => ({
+        name: row.name,
+        manifestos: row.manifestos,
+        status: row.status,
       }));
-  }, [isLiveData, rows]);
+  }, [m, isDemo, rows]);
 
-  const totalEstablishments = isLiveData && rows ? rows.length : TOTAL;
+  const totalEstablishments = m ? m.total : TOTAL;
+  const activePermits = m ? m.active : ACTIVE_PERMITS;
   const topBarangay =
-    isLiveData && byBarangayData.length
-      ? byBarangayData[0].barangay
-      : TOP_BARANGAY;
+    m && byBarangayData.length ? byBarangayData[0].barangay : m ? "-" : TOP_BARANGAY;
   const topMaxManifestos = topEstData[0]?.manifestos || 1;
 
-  const pendingApplications = useMemo(
-    () => (liveApps.data ?? []).filter((a) => a.status === "Pending").length,
-    [liveApps.data],
-  );
+
+  const pendingApplications = m?.pendingApplications ?? 0;
 
   const establishmentInsight = useMemo(() => {
-    const source = rows ?? [];
-    const total = isLiveData ? source.length : totalEstablishments;
-    const active = isLiveData
-      ? source.filter((r) => r.status === "Active").length
-      : TOTAL;
-    const suspended = isLiveData
-      ? source.filter((r) => r.status === "Suspended").length
-      : 0;
-    const barangays = byBarangayData.length;
+    const total = m?.total ?? TOTAL;
+    const active = m?.active ?? ACTIVE_PERMITS;
+    const suspended = m?.suspended ?? 0;
     const topShare =
       total > 0 && byBarangayData[0]
         ? (byBarangayData[0].count / total) * 100
         : 0;
-    const idle = isLiveData
-      ? source.filter((r) => r.totalManifestos === 0).length
-      : 0;
-    const totalCredits = isLiveData
-      ? source.reduce((a, r) => a + (r.creditBalance || 0), 0)
-      : 0;
 
     return buildEstablishmentInsight({
-      live: isLiveData,
+      live: isLive,
       total,
       active,
       suspended,
-      barangays,
-      topBarangay: isLiveData ? (byBarangayData[0]?.barangay ?? null) : TOP_BARANGAY,
+      barangays: byBarangayData.length,
+      topBarangay:
+        m && byBarangayData.length
+          ? byBarangayData[0].barangay
+          : m
+            ? null
+            : TOP_BARANGAY,
       topBarangayShare: topShare,
-      idleEstablishments: idle,
-      totalCredits,
+      idleEstablishments: rows.filter((row) => row.manifestos === 0).length,
+      totalCredits: rows.reduce(
+        (sum, row) => sum + (row.creditBalance || 0),
+        0,
+      ),
       pendingApplications,
       seed: new Date().getDate(),
     });
-  }, [
-    rows,
-    isLiveData,
-    totalEstablishments,
-    byBarangayData,
-    pendingApplications,
-  ]);
+  }, [m, isLive, rows, byBarangayData, pendingApplications]);
 
   return (
-    <div className="space-y-6">
-      <InsightWidget insight={establishmentInsight} label="Establishments" />
-      <Reveal>
-        <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+    <AnalyticsState isLive={isLive} label="establishment" state={metrics}>
+      <div className="space-y-6">
+        <InsightWidget
+          insight={establishmentInsight}
+          label="Establishments"
+        />
+
+        <Reveal>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
           <StatCard
             icon={Building2}
             label="Total Establishments"
             value={String(totalEstablishments)}
-            delta="+2"
+            sample={isDemo}
           />
           <StatCard
             icon={Shield}
             label="Active Permits"
-            value={String(ACTIVE_PERMITS)}
-            delta="+1"
-          />
-          <StatCard
-            icon={Star}
-            label="Avg Eco Rating"
-            value={AVG_ECO.toFixed(1)}
-            delta="+0.2"
+            value={isLive ? (isLiveData ? String(activePermits) : "—") : String(activePermits)}
+            sample={isDemo}
           />
           <StatCard
             icon={MapPin}
             label="Top Barangay"
             value={topBarangay}
-            delta="+4"
+            sample={isDemo}
           />
         </div>
       </Reveal>
 
       <Reveal delay={80}>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <SectionCard title="Establishments by Barangay">
-            <div className="flex justify-end mb-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => toast.info("Export coming soon…")}
-              >
-                <Download className="size-4 mr-1.5" />
-                Export CSV
-              </Button>
-            </div>
+          <SectionCard title="Establishments by Location" sample={isDemo}>
             {isEmptyChartData(byBarangayData) ? (
               <ChartEmptyState className="h-64" />
             ) : (
@@ -362,18 +292,12 @@ export function EstablishmentAnalytics() {
                   />
                   <XAxis
                     dataKey="barangay"
-                    stroke="var(--color-muted-foreground)"
-                    fontSize={12}
-                    tickLine={false}
-                    axisLine={false}
+                    {...chartAxisProps}
                   />
                   <YAxis
-                    stroke="var(--color-muted-foreground)"
-                    fontSize={12}
-                    tickLine={false}
-                    axisLine={false}
+                    {...chartAxisProps}
                   />
-                  <Tooltip contentStyle={tooltipStyle} />
+                  <Tooltip contentStyle={chartTooltipStyle} />
                   <Bar dataKey="count" radius={[8, 8, 0, 0]}>
                     {byBarangayData.map((_, i) => (
                       <Cell
@@ -388,15 +312,15 @@ export function EstablishmentAnalytics() {
             )}
           </SectionCard>
 
-          <SectionCard title="Permit Status">
-            {isEmptyChartData(permitStatus) ? (
+          <SectionCard title="Permit Status" sample={isDemo}>
+            {isEmptyChartData(permitStatusData) ? (
               <ChartEmptyState className="h-64" />
             ) : (
             <div className="h-64">
               <ResponsiveContainer>
                 <PieChart>
                   <Pie
-                    data={permitStatus}
+                    data={permitStatusData}
                     dataKey="count"
                     nameKey="status"
                     innerRadius={55}
@@ -405,20 +329,20 @@ export function EstablishmentAnalytics() {
                     stroke="var(--color-card)"
                     strokeWidth={2}
                   >
-                    {permitStatus.map((_, i) => (
+                    {permitStatusData.map((_, i) => (
                       <Cell
                         key={i}
                         fill={CHART_COLORS[i % CHART_COLORS.length]}
                       />
                     ))}
                   </Pie>
-                  <Tooltip contentStyle={tooltipStyle} />
+                  <Tooltip contentStyle={chartTooltipStyle} />
                 </PieChart>
               </ResponsiveContainer>
             </div>
             )}
             <div className="mt-2 grid grid-cols-3 gap-1.5">
-              {permitStatus.map((p, i) => (
+              {permitStatusData.map((p, i) => (
                 <div key={p.status} className="flex items-center gap-2 text-xs">
                   <span
                     className="size-2.5 rounded-sm"
@@ -436,18 +360,8 @@ export function EstablishmentAnalytics() {
       </Reveal>
 
       <Reveal delay={160}>
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          <SectionCard title="Activity Levels">
-            <div className="flex justify-end mb-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => toast.info("Export coming soon…")}
-              >
-                <Download className="size-4 mr-1.5" />
-                Export CSV
-              </Button>
-            </div>
+        <div className="grid grid-cols-1 gap-6">
+          <SectionCard title="Activity Levels" sample={isDemo}>
             {isEmptyChartData(activityData) ? (
               <ChartEmptyState className="h-80" />
             ) : (
@@ -465,21 +379,15 @@ export function EstablishmentAnalytics() {
                   />
                   <XAxis
                     type="number"
-                    stroke="var(--color-muted-foreground)"
-                    fontSize={12}
-                    tickLine={false}
-                    axisLine={false}
+                    {...chartAxisProps}
                   />
                   <YAxis
                     dataKey="name"
                     type="category"
-                    stroke="var(--color-muted-foreground)"
-                    fontSize={11}
-                    tickLine={false}
-                    axisLine={false}
+                    {...chartAxisProps}
                     width={110}
                   />
-                  <Tooltip contentStyle={tooltipStyle} />
+                  <Tooltip contentStyle={chartTooltipStyle} />
                   <Bar
                     dataKey="manifestos"
                     fill="var(--color-primary)"
@@ -491,74 +399,31 @@ export function EstablishmentAnalytics() {
             )}
           </SectionCard>
 
-          <SectionCard title="Eco Rating Distribution">
-            <div className="flex justify-end mb-2">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => toast.info("Export coming soon…")}
-              >
-                <Download className="size-4 mr-1.5" />
-                Export CSV
-              </Button>
-            </div>
-            {isEmptyChartData(ecoRatingDistribution) ? (
-              <ChartEmptyState className="h-64" />
-            ) : (
-            <div className="h-64">
-              <ResponsiveContainer>
-                <RadialBarChart
-                  innerRadius="30%"
-                  outerRadius="100%"
-                  data={ecoRatingDistribution.map((d) => ({
-                    ...d,
-                    value: d.count * 10,
-                  }))}
-                  startAngle={90}
-                  endAngle={-270}
-                >
-                  <RadialBar dataKey="value" background cornerRadius={8}>
-                    {ecoRatingDistribution.map((_, i) => (
-                      <Cell key={i} fill={CHART_COLORS[i]} />
-                    ))}
-                  </RadialBar>
-                  <Tooltip contentStyle={tooltipStyle} />
-                </RadialBarChart>
-              </ResponsiveContainer>
-            </div>
-            )}
-            <div className="space-y-1.5 mt-1">
-              {ecoRatingDistribution.map((d, i) => (
-                <div key={d.rating} className="flex items-center gap-2 text-xs">
-                  <span
-                    className="size-2.5 rounded-sm"
-                    style={{ background: CHART_COLORS[i] }}
-                  />
-                  <span className="text-muted-foreground">{d.rating}</span>
-                  <span className="ml-auto font-medium">
-                    {d.count} establishments
-                  </span>
-                </div>
-              ))}
-            </div>
-          </SectionCard>
         </div>
       </Reveal>
 
       <Reveal delay={240}>
-        <SectionCard title="Top Establishments">
+        <SectionCard title="Top Establishments" sample={isDemo}>
           <Table>
             <TableHeader>
               <TableRow className="bg-secondary/50">
                 <TableHead className="w-12">#</TableHead>
                 <TableHead>Establishment</TableHead>
                 <TableHead>Manifestos</TableHead>
-                <TableHead>Rating</TableHead>
-                <TableHead>Eco Rating</TableHead>
                 <TableHead>Status</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
+              {topEstData.length === 0 && (
+                <TableRow>
+                  <TableCell
+                    colSpan={4}
+                    className="text-center py-8 text-muted-foreground"
+                  >
+                    No establishments on record.
+                  </TableCell>
+                </TableRow>
+              )}
               {topEstData.map((e, i) => (
                 <TableRow
                   key={e.name}
@@ -582,18 +447,6 @@ export function EstablishmentAnalytics() {
                     </div>
                   </TableCell>
                   <TableCell>
-                    {e.rating == null ? (
-                      <span className="text-muted-foreground">—</span>
-                    ) : (
-                      <StarRating value={e.rating} />
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    <span className="text-sm font-medium">
-                      {e.ecoRating == null ? "—" : e.ecoRating.toFixed(1)}
-                    </span>
-                  </TableCell>
-                  <TableCell>
                     <Badge
                       variant="outline"
                       className={
@@ -613,14 +466,17 @@ export function EstablishmentAnalytics() {
       </Reveal>
 
       <Reveal delay={360}>
-        <SectionCard title="Revenue & Credit Flow by Establishment">
-          {isEmptyChartData(revenueFlow) ? (
+        <SectionCard
+          title="Manifests & Credits by Establishment"
+          sample={isDemo}
+        >
+          {isEmptyChartData(activityData) ? (
             <ChartEmptyState className="h-80" />
           ) : (
           <div className="h-80">
             <ResponsiveContainer>
               <ComposedChart
-                data={revenueFlow}
+                data={activityData}
                 margin={{ left: -10, right: 30 }}
               >
                 <CartesianGrid
@@ -630,39 +486,31 @@ export function EstablishmentAnalytics() {
                 />
                 <XAxis
                   dataKey="name"
-                  stroke="var(--color-muted-foreground)"
-                  fontSize={12}
-                  tickLine={false}
-                  axisLine={false}
+                  {...chartAxisProps}
                 />
                 <YAxis
                   yAxisId="left"
-                  stroke="var(--color-muted-foreground)"
-                  fontSize={12}
-                  tickLine={false}
-                  axisLine={false}
+                  {...chartAxisProps}
                   label={{ value: "Manifestos", angle: -90, position: "insideLeft", offset: 10, style: { fontSize: 11, fill: "var(--color-muted-foreground)" } }}
                 />
                 <YAxis
                   yAxisId="right"
                   orientation="right"
-                  stroke="var(--color-muted-foreground)"
-                  fontSize={12}
-                  tickLine={false}
-                  axisLine={false}
-                  label={{ value: "Revenue (₱)", angle: 90, position: "insideRight", offset: 10, style: { fontSize: 11, fill: "var(--color-muted-foreground)" } }}
+                  {...chartAxisProps}
+                  label={{ value: "Credits remaining", angle: 90, position: "insideRight", offset: 10, style: { fontSize: 11, fill: "var(--color-muted-foreground)" } }}
                 />
                 <Tooltip
-                  contentStyle={tooltipStyle}
+                  contentStyle={chartTooltipStyle}
                   formatter={(value: number, name: string) => {
-                    if (name === "revenue") return [`₱${value.toLocaleString()}`, "Revenue"];
-                    if (name === "credits") return [value.toLocaleString(), "Credits"];
-                    return [value, "Manifestos"];
+                    if (name === "Credits remaining")
+                      return [value.toLocaleString(), "Credits remaining"];
+                    return [value.toLocaleString(), "Manifestos"];
                   }}
                 />
                 <Bar
                   yAxisId="left"
                   dataKey="manifestos"
+                  name="Manifestos"
                   fill="var(--color-chart-1)"
                   radius={[8, 8, 0, 0]}
                   opacity={0.8}
@@ -670,7 +518,8 @@ export function EstablishmentAnalytics() {
                 <Line
                   yAxisId="right"
                   type="monotone"
-                  dataKey="revenue"
+                  dataKey="credits"
+                  name="Credits remaining"
                   stroke="var(--color-chart-2)"
                   strokeWidth={2.5}
                   dot={{ r: 4, fill: "var(--color-chart-2)" }}
@@ -687,111 +536,12 @@ export function EstablishmentAnalytics() {
             </span>
             <span className="flex items-center gap-1.5">
               <span className="inline-block w-4 h-0.5 rounded" style={{ background: "var(--color-chart-2)" }} />
-              Revenue
+              Credits remaining
             </span>
           </div>
         </SectionCard>
       </Reveal>
-
-      <Reveal delay={400}>
-        <SectionCard title="Eco-Performance Matrix">
-          {isEmptyChartData(ecoMatrix) ? (
-            <ChartEmptyState className="h-80" />
-          ) : (
-          <div className="h-80">
-            <ResponsiveContainer>
-              <ScatterChart margin={{ left: 10, right: 10, top: 10, bottom: 10 }}>
-                <CartesianGrid
-                  stroke="var(--color-border)"
-                  strokeDasharray="3 6"
-                />
-                <XAxis
-                  type="number"
-                  dataKey="eco"
-                  name="Eco Rating"
-                  domain={[3.5, 5]}
-                  stroke="var(--color-muted-foreground)"
-                  fontSize={12}
-                  tickLine={false}
-                  axisLine={false}
-                  label={{ value: "Eco Rating", position: "insideBottom", offset: -5, style: { fontSize: 11, fill: "var(--color-muted-foreground)" } }}
-                />
-                <YAxis
-                  type="number"
-                  dataKey="manifestos"
-                  name="Manifestos"
-                  stroke="var(--color-muted-foreground)"
-                  fontSize={12}
-                  tickLine={false}
-                  axisLine={false}
-                  label={{ value: "Manifestos", angle: -90, position: "insideLeft", offset: 10, style: { fontSize: 11, fill: "var(--color-muted-foreground)" } }}
-                />
-                <ZAxis type="number" dataKey="credits" range={[80, 400]} />
-                <Tooltip
-                  contentStyle={tooltipStyle}
-                  formatter={(value: number, name: string) => {
-                    if (name === "Eco Rating") return [value.toFixed(1), "Eco Rating"];
-                    if (name === "Credits") return [value.toLocaleString(), "Credits"];
-                    return [value, name];
-                  }}
-                  labelFormatter={() => ""}
-                  content={({ active, payload }) => {
-                    if (!active || !payload?.length) return null;
-                    const d = payload[0].payload;
-                    return (
-                      <div style={tooltipStyle}>
-                        <p className="font-medium text-sm mb-1">{d.name}</p>
-                        <p className="text-xs text-muted-foreground">Eco Rating: <span className="font-medium text-foreground">{d.eco.toFixed(1)}</span></p>
-                        <p className="text-xs text-muted-foreground">Manifestos: <span className="font-medium text-foreground">{d.manifestos}</span></p>
-                        <p className="text-xs text-muted-foreground">Credits: <span className="font-medium text-foreground">{d.credits.toLocaleString()}</span></p>
-                        <p className="text-xs mt-1">
-                          Status: <span className={`font-medium ${d.status === "Active" ? "text-success" : "text-destructive"}`}>{d.status}</span>
-                        </p>
-                      </div>
-                    );
-                  }}
-                />
-                <ReferenceLine
-                  x={4.2}
-                  stroke="var(--color-muted-foreground)"
-                  strokeDasharray="4 4"
-                  strokeWidth={1}
-                  label={{ value: "Avg Eco (4.2)", position: "top", style: { fontSize: 10, fill: "var(--color-muted-foreground)" } }}
-                />
-                <ReferenceLine
-                  y={73}
-                  stroke="var(--color-muted-foreground)"
-                  strokeDasharray="4 4"
-                  strokeWidth={1}
-                  label={{ value: "Avg Manifestos (73)", position: "right", style: { fontSize: 10, fill: "var(--color-muted-foreground)" } }}
-                />
-                <Scatter
-                  data={ecoMatrix.filter((d) => d.status === "Active")}
-                  fill="oklch(0.65 0.15 145)"
-                  opacity={0.85}
-                />
-                <Scatter
-                  data={ecoMatrix.filter((d) => d.status === "Expired")}
-                  fill="var(--color-destructive)"
-                  opacity={0.85}
-                />
-              </ScatterChart>
-            </ResponsiveContainer>
-          </div>
-          )}
-          <div className="mt-3 flex items-center gap-4 text-xs text-muted-foreground">
-            <span className="flex items-center gap-1.5">
-              <span className="inline-block size-2.5 rounded-full" style={{ background: "oklch(0.65 0.15 145)" }} />
-              Active
-            </span>
-            <span className="flex items-center gap-1.5">
-              <span className="inline-block size-2.5 rounded-full" style={{ background: "var(--color-destructive)" }} />
-              Expired
-            </span>
-            <span className="ml-auto text-muted-foreground/60">Bubble size = Credits</span>
-          </div>
-        </SectionCard>
-      </Reveal>
-    </div>
+      </div>
+    </AnalyticsState>
   );
 }

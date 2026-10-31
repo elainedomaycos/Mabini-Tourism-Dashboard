@@ -18,12 +18,14 @@ export function ActionRequiredStrip({
   operatorApps,
   manifestos,
   tourists,
+  expiringPasses,
   setFilters,
 }: {
   receipts: Array<{ id: string; status: string }>;
   operatorApps: Array<{ id: string; status: string }>;
   manifestos: Array<{ id: string; date: string }>;
-  tourists: Array<{ id: string; expires: string; status: string }>;
+  tourists: Array<{ expires?: string; status: string }>;
+  expiringPasses?: number;
   setFilters: (updates: Record<string, string>) => void;
 }) {
   // keep props for backward compat — only Expiring Dive Passes is shown now
@@ -33,7 +35,7 @@ export function ActionRequiredStrip({
   const items: ActionItem[] = useMemo(() => {
     const now = new Date();
     now.setHours(0, 0, 0, 0);
-    const expiringPasses = tourists.filter((t) => {
+    const expiring = tourists.filter((t) => {
       if (t.status !== "Active" || !t.expires || t.expires === "—") return false;
       const exp = new Date(t.expires + "T00:00:00");
       if (Number.isNaN(exp.getTime())) return false;
@@ -46,7 +48,7 @@ export function ActionRequiredStrip({
         id: "passes",
         icon: CreditCard,
         title: "Expiring Dive Passes",
-        count: expiringPasses,
+        count: expiringPasses ?? expiring,
         color: "text-warning",
         bgColor: "bg-warning/10",
         borderColor: "border-warning/30",
@@ -54,7 +56,7 @@ export function ActionRequiredStrip({
         tab: "overview",
       },
     ].filter((item) => item.count > 0);
-  }, [tourists]);
+  }, [tourists, expiringPasses]);
 
   if (items.length === 0) return null;
 

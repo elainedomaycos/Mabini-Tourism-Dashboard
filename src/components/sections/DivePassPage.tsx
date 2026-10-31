@@ -326,24 +326,46 @@ export function DivePassPage() {
           <StatCard
             icon={CreditCard}
             label="Total Passes"
-            value={isLiveData ? String(totalPasses) : "25"}
+            value={
+              isLive && liveInventory.isPending
+                ? "—"
+                : isLiveData
+                  ? String(totalPasses)
+                  : "25"
+            }
             delta={
-              isLiveData ? `${totalDiff >= 0 ? "+" : ""}${totalDiff}` : "+3"
+              isLive && liveInventory.isPending
+                ? ""
+                : isLiveData
+                  ? `${totalDiff >= 0 ? "+" : ""}${totalDiff}`
+                  : "+3"
             }
             up={isLiveData ? totalDiff >= 0 : true}
           />
           <StatCard
             icon={CheckCircle2}
             label="Active Passes"
-            value={isLiveData ? String(inUse) : "17"}
-            delta={isLiveData ? `${useDiff >= 0 ? "+" : ""}${useDiff}` : "+1"}
+            value={
+              isLive && liveInventory.isPending
+                ? "—"
+                : isLiveData
+                  ? String(inUse)
+                  : "17"
+            }
+            delta={
+              isLive && liveInventory.isPending
+                ? ""
+                : isLiveData
+                  ? `${useDiff >= 0 ? "+" : ""}${useDiff}`
+                  : "+1"
+            }
             up={isLiveData ? useDiff >= 0 : true}
           />
           <StatCard
             icon={Clock}
             label="Expiring Soon"
-            value="4"
-            delta="-1"
+            value={isLive ? "—" : "4"}
+            delta={isLive ? "" : "-1"}
             up={false}
           />
         </div>
