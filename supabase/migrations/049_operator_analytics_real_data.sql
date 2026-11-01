@@ -32,7 +32,7 @@ as $$
   ),
   current_m as (
     select m.id, m.operator_id, m.location, m.created_at,
-      coalesce(d.divers, m.divers, 0) as divers
+      coalesce(d.divers, 0) as divers
     from public.dive_manifests m
     cross join bounds b
     left join (
@@ -42,7 +42,7 @@ as $$
     where m.created_at >= b.start_ts and m.created_at < b.end_ts
   ),
   prev_m as (
-    select m.id, m.operator_id, coalesce(d.divers, m.divers, 0) as divers
+    select m.id, m.operator_id, coalesce(d.divers, 0) as divers
     from public.dive_manifests m
     cross join bounds b
     left join (
@@ -86,7 +86,7 @@ as $$
     select name, id, site, divers, date from (
       select n.name, m.id::text as id,
         coalesce(nullif(trim(m.location), ''), 'Unknown site') as site,
-        coalesce(d.divers, m.divers, 0)::int as divers,
+        coalesce(d.divers, 0)::int as divers,
         (m.created_at at time zone 'Asia/Manila')::date as date,
         row_number() over (partition by n.name order by m.created_at desc) as rn
       from public.dive_manifests m

@@ -29,7 +29,7 @@ as $$
         between p_from and p_to
   ),
   current_manifests as (
-    select m.*, coalesce(d.divers, m.divers, 0) as divers
+    select m.*, coalesce(d.divers, 0) as divers
     from public.dive_manifests m
     cross join bounds b
     left join (
@@ -77,7 +77,7 @@ as $$
         and (t.renewal_date is null or t.renewal_date >= b.today)
     ),
     'todayDivers', (
-      select coalesce(sum(coalesce(d.divers, m.divers, 0)), 0)
+      select coalesce(sum(coalesce(d.divers, 0)), 0)
       from public.dive_manifests m
       cross join bounds b
       left join (
@@ -88,7 +88,7 @@ as $$
       where (m.created_at at time zone 'Asia/Manila')::date = b.today
     ),
     'yesterdayDivers', (
-      select coalesce(sum(coalesce(d.divers, m.divers, 0)), 0)
+      select coalesce(sum(coalesce(d.divers, 0)), 0)
       from public.dive_manifests m
       cross join bounds b
       left join (

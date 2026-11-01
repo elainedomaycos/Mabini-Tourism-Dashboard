@@ -34,14 +34,22 @@ as $$
     from public.tourists t
     left join operator_map om on om.tourist_id = t.id
   ),
+  current_m as (
+    select m.id, m.operator_id, coalesce(d.divers, 0) as divers
+    from public.dive_manifests m
+    cross join bounds b
+    left join (
+      select manifest_id, count(*)::int as divers
+      from public.manifest_divers group by manifest_id
+    ) d on d.manifest_id = m.id
+    where m.created_at >= b.start_ts and m.created_at < b.end_ts
+  ),
   manifest_counts as (
     select n.name,
       count(*)::int as manifestos,
       coalesce(sum(m.divers), 0)::int as divers
-    from public.dive_manifests m
-    cross join bounds b
+    from current_m m
     join operator_names n on n.operator_id = m.operator_id
-    where m.created_at >= b.start_ts and m.created_at < b.end_ts
     group by n.name
   ),
   credit_balances as (
