@@ -1,6 +1,6 @@
 import { useMemo, useCallback } from "react";
 import { useFilters } from "./useFilters";
-import { resolveDateRange } from "@/lib/period";
+import { resolveDateRange, todayInManila, clampDateToToday } from "@/lib/period";
 
 export function useGlobalDateRange() {
   const { search, setFilters } = useFilters();
@@ -30,8 +30,8 @@ export function useGlobalDateRange() {
     (r: string, from?: string, to?: string) => {
       setFilters({
         globalDateRange: r,
-        globalDateFrom: from ?? "",
-        globalDateTo: to ?? "",
+        globalDateFrom: from ? clampDateToToday(from) : "",
+        globalDateTo: to ? clampDateToToday(to) : "",
       });
     },
     [setFilters],
@@ -42,6 +42,7 @@ export function useGlobalDateRange() {
     rangeData,
     from: rangeData.from,
     to: rangeData.to,
+    today: todayInManila(),
     grain: rangeData.grain,
     label: rangeData.label,
     invalid: rangeData.invalid,

@@ -5,6 +5,8 @@ import {
   CalendarIcon,
   Loader2,
   FileDown,
+  Printer,
+  Sparkles,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -12,13 +14,6 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import {
   Table,
   TableBody,
@@ -37,20 +32,22 @@ import {
   Tooltip,
 } from "recharts";
 import { toast } from "sonner";
-import { SectionCard, StatCard, chartAxisProps, chartTooltipStyle } from "@/components/shared";
+import { SectionCard, chartAxisProps, chartTooltipStyle } from "@/components/shared";
 import { isEmptyChartData, ChartEmptyState } from "@/components/ChartEmptyState";
 import { MetricsError } from "@/components/AnalyticsState";
 import { pushAuditLog } from "@/lib/audit";
-import { type DateRange, resolveDateRange } from "@/lib/period";
-import { supabase } from "@/lib/supabase";
+import { type DateRange, resolveDateRange, todayInManila, clampDateToToday } from "@/lib/period";
 import { dbErrorMessage, useLiveMode } from "@/lib/queries";
 import { useMetrics, aggregateDaily } from "@/lib/metrics";
 import { monthlyTrends } from "@/lib/mock-data";
+import { downloadCsv, formatPhp } from "@/lib/export-utils";
+import { openPrintDocument } from "@/lib/print-template";
 
 export function Reports({ range: globalRange }: { range: DateRange }) {
   const [range, setRange] = useState("monthly");
   const [dateFrom, setDateFrom] = useState(globalRange.from);
   const [dateTo, setDateTo] = useState(globalRange.to);
+  const [docFormat, setDocFormat] = useState("A4");
   const [generating, setGenerating] = useState(false);
   type ReportRow = {
     period: string;
@@ -61,32 +58,41 @@ export function Reports({ range: globalRange }: { range: DateRange }) {
     revenue: number;
   };
   const [reportData, setReportData] = useState<ReportRow[] | null>(null);
-  const isLive = useLiveMode();
 
+  const isLive = useLiveMode();
   useEffect(() => {
     setDateFrom(globalRange.from);
     setDateTo(globalRange.to);
     setReportData(null);
   }, [globalRange.from, globalRange.to]);
 
-  const reportRange = useMemo<DateRange>(() => {
-    const resolved = resolveDateRange(
-      "custom",
-      dateFrom || globalRange.from,
-      dateTo || globalRange.to,
-    );
-    const grain = range === "daily" ? "day" : range === "weekly" ? "week" : "month";
-    return { ...resolved, grain };
-  }, [dateFrom, dateTo, globalRange.from, globalRange.to, range]);
+  const reportRange = useMemo(
+    () => resolveDateRange("custom", dateFrom, dateTo),
+    [dateFrom, dateTo],
+  );
 
   const metrics = useMetrics("report", reportRange);
   const m = metrics.data;
 
   const filteredTrends = useMemo(() => {
-    if (!m) return isLive ? [] : monthlyTrends;
+    if (m) {
+      return aggregateDaily(
+        reportRange,
+        m.daily,
+        (row) => row.date,
+        () => ({ dives: 0 }),
+        (acc, row) => {
+          acc.dives += row.divers;
+        },
+      ).map((bucket) => ({ m: bucket.label, dives: bucket.dives }));
+    }
+    if (isLive) return [];
     return aggregateDaily(
-      { ...reportRange, grain: "month" },
-      m.daily,
+      reportRange,
+      monthlyTrends.map((t, i) => ({
+        date: `2026-${String(i + 1).padStart(2, "0")}-15`,
+        divers: t.dives,
+      })),
       (row) => row.date,
       () => ({ dives: 0 }),
       (acc, row) => {
@@ -94,6 +100,32 @@ export function Reports({ range: globalRange }: { range: DateRange }) {
       },
     ).map((bucket) => ({ m: bucket.label, dives: bucket.dives }));
   }, [m, isLive, reportRange]);
+
+  const applyPreset = (preset: "30d" | "thisMonth" | "lastMonth" | "ytd") => {
+    const now = new Date();
+    const y = now.getFullYear();
+    const mIdx = now.getMonth();
+    const pad = (n: number) => String(n).padStart(2, "0");
+
+    if (preset === "30d") {
+      const past = new Date(Date.now() - 30 * 86400000);
+      setDateFrom(past.toISOString().slice(0, 10));
+      setDateTo(now.toISOString().slice(0, 10));
+    } else if (preset === "thisMonth") {
+      setDateFrom(`${y}-${pad(mIdx + 1)}-01`);
+      setDateTo(now.toISOString().slice(0, 10));
+    } else if (preset === "lastMonth") {
+      const prevM = mIdx === 0 ? 11 : mIdx - 1;
+      const prevY = mIdx === 0 ? y - 1 : y;
+      const lastDay = new Date(prevY, prevM + 1, 0).getDate();
+      setDateFrom(`${prevY}-${pad(prevM + 1)}-01`);
+      setDateTo(`${prevY}-${pad(prevM + 1)}-${pad(lastDay)}`);
+    } else if (preset === "ytd") {
+      setDateFrom(`${y}-01-01`);
+      setDateTo(now.toISOString().slice(0, 10));
+    }
+    setReportData(null);
+  };
 
   const generateReport = () => {
     setGenerating(true);
@@ -125,6 +157,7 @@ export function Reports({ range: globalRange }: { range: DateRange }) {
       }));
       setReportData(rows);
       setGenerating(false);
+      pushAuditLog(`Generated ${range} report for ${dateFrom} to ${dateTo}`);
       toast.success(`${range} report generated`, {
         description: `${rows.length} periods included.`,
       });
@@ -151,30 +184,111 @@ export function Reports({ range: globalRange }: { range: DateRange }) {
     const data = demoRows[range] ?? demoRows.monthly;
     setReportData(data);
     setGenerating(false);
+    pushAuditLog(`Generated sample ${range} report`);
     toast.success(`${range} sample report generated`, {
       description: "Connect Supabase for live report data.",
     });
   };
 
-  const exportReport = (fmt: string) => {
-    if (!reportData) return toast.error("Generate a report first");
-    if (fmt !== "CSV") {
-      return toast.info("CSV is the only supported export");
+  const exportCsv = () => {
+    if (!reportData || reportData.length === 0) {
+      return toast.error("Generate a report first");
     }
-    const header = "Period,Tourists,Operators,Manifestos,Dives,Revenue";
-    const rows = reportData.map(
-      (row) =>
-        `${row.period},${row.tourists},${row.operators},${row.manifestos},${row.dives},${row.revenue}`,
+    const headers = ["Period", "Tourists", "Active Operators", "Manifestos", "Dives", "Revenue (PHP)"];
+    const rows = reportData.map((r) => [r.period, r.tourists, r.operators, r.manifestos, r.dives, r.revenue]);
+    downloadCsv(`mabini-tourism-report-${range}-${dateFrom || "all"}-to-${dateTo || "all"}`, headers, rows);
+    pushAuditLog(`Exported ${range} report as CSV`);
+    toast.success("CSV Downloaded", { description: "Spreadsheet ready." });
+  };
+
+  const printOfficialReport = () => {
+    if (!reportData || reportData.length === 0) {
+      return toast.error("Generate a report first");
+    }
+
+    const totals = reportData.reduce(
+      (acc, r) => {
+        acc.tourists += r.tourists;
+        acc.operators = Math.max(acc.operators, r.operators);
+        acc.manifestos += r.manifestos;
+        acc.dives += r.dives;
+        acc.revenue += r.revenue;
+        return acc;
+      },
+      { tourists: 0, operators: 0, manifestos: 0, dives: 0, revenue: 0 },
     );
-    const csv = [header, ...rows].join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `report-${range}-${dateFrom || "all"}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
-    toast.success("Report exported", { description: "CSV downloaded." });
+
+    const kpiHtml = `
+      <div class="kpi-grid">
+        <div class="kpi-card">
+          <div class="kpi-label">Total Registered Tourists</div>
+          <div class="kpi-value">${totals.tourists.toLocaleString()}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Total Dives Completed</div>
+          <div class="kpi-value">${totals.dives.toLocaleString()}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Dive Manifestos Filed</div>
+          <div class="kpi-value">${totals.manifestos.toLocaleString()}</div>
+        </div>
+        <div class="kpi-card">
+          <div class="kpi-label">Estimated Municipal Revenue</div>
+          <div class="kpi-value">${formatPhp(totals.revenue)}</div>
+        </div>
+      </div>
+    `;
+
+    const rowsHtml = reportData
+      .map(
+        (r) => `
+      <tr>
+        <td class="font-semibold">${r.period}</td>
+        <td class="text-center">${r.tourists.toLocaleString()}</td>
+        <td class="text-center">${r.operators}</td>
+        <td class="text-center">${r.manifestos.toLocaleString()}</td>
+        <td class="text-center">${r.dives.toLocaleString()}</td>
+        <td class="text-right font-mono">${formatPhp(r.revenue)}</td>
+      </tr>`,
+      )
+      .join("");
+
+    const tableHtml = `
+      <table>
+        <thead>
+          <tr>
+            <th>Period (${range})</th>
+            <th class="text-center">Tourists</th>
+            <th class="text-center">Active Operators</th>
+            <th class="text-center">Manifestos</th>
+            <th class="text-center">Total Dives</th>
+            <th class="text-right">Revenue (PHP)</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rowsHtml}
+        </tbody>
+        <tfoot>
+          <tr style="background-color: #f1f5f9; font-weight: 700;">
+            <td>Total / Summary</td>
+            <td class="text-center">${totals.tourists.toLocaleString()}</td>
+            <td class="text-center">${totals.operators} max</td>
+            <td class="text-center">${totals.manifestos.toLocaleString()}</td>
+            <td class="text-center">${totals.dives.toLocaleString()}</td>
+            <td class="text-right font-mono">${formatPhp(totals.revenue)}</td>
+          </tr>
+        </tfoot>
+      </table>
+    `;
+
+    openPrintDocument({
+      title: `Municipal Dive Tourism Summary Report (${range.toUpperCase()})`,
+      documentType: "Executive Tourism Report",
+      periodOrDate: `${dateFrom || "Start"} to ${dateTo || "Present"}`,
+      bodyHtml: `${kpiHtml}${tableHtml}`,
+      paperFormat: docFormat.trim() || "A4",
+    });
+    pushAuditLog(`Printed official ${range} report document`);
   };
 
   return (
@@ -198,11 +312,11 @@ export function Reports({ range: globalRange }: { range: DateRange }) {
               Generate report
             </h3>
             <p className="text-sm text-muted-foreground">
-              Aggregate tourism data across configurable time windows.
+              Aggregate municipal tourism data across configurable time windows.
             </p>
           </div>
           <Button
-            className="gradient-primary text-primary-foreground shrink-0"
+            className="gradient-primary text-primary-foreground shrink-0 shadow-sm"
             onClick={generateReport}
             disabled={generating || (isLive && metrics.isPending)}
           >
@@ -211,7 +325,7 @@ export function Reports({ range: globalRange }: { range: DateRange }) {
             ) : (
               <FileBarChart className="size-4 mr-1.5" />
             )}
-            {generating ? "Generating…" : "Generate"}
+            {generating ? "Generating…" : "Generate report"}
           </Button>
         </div>
 
@@ -223,16 +337,60 @@ export function Reports({ range: globalRange }: { range: DateRange }) {
               <TabsTrigger value="monthly">Monthly</TabsTrigger>
             </TabsList>
           </Tabs>
+
           <div className="hidden sm:block h-6 w-px bg-border" />
+
+          {/* Quick Presets */}
+          <div className="flex items-center gap-1">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => applyPreset("30d")}
+              className="h-8 text-xs px-2.5"
+            >
+              30d
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => applyPreset("thisMonth")}
+              className="h-8 text-xs px-2.5"
+            >
+              This Month
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => applyPreset("lastMonth")}
+              className="h-8 text-xs px-2.5"
+            >
+              Last Month
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => applyPreset("ytd")}
+              className="h-8 text-xs px-2.5"
+            >
+              YTD
+            </Button>
+          </div>
+
+          <div className="hidden sm:block h-6 w-px bg-border" />
+
           <div className="flex items-center gap-2">
             <Label className="text-xs text-muted-foreground whitespace-nowrap">
               From
             </Label>
             <Input
               type="date"
+              max={dateTo || todayInManila()}
               value={dateFrom}
-              onChange={(e) => setDateFrom(e.target.value)}
-              className="w-40"
+              onChange={(e) => {
+                setDateFrom(clampDateToToday(e.target.value));
+                setReportData(null);
+              }}
+              className="w-36 h-8 text-xs"
             />
           </div>
           <div className="flex items-center gap-2">
@@ -241,40 +399,91 @@ export function Reports({ range: globalRange }: { range: DateRange }) {
             </Label>
             <Input
               type="date"
+              min={dateFrom || undefined}
+              max={todayInManila()}
               value={dateTo}
-              onChange={(e) => setDateTo(e.target.value)}
-              className="w-40"
+              onChange={(e) => {
+                setDateTo(clampDateToToday(e.target.value));
+                setReportData(null);
+              }}
+              className="w-36 h-8 text-xs"
             />
           </div>
         </div>
       </Card>
 
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {[
-          {
-            icon: FileDown,
-            label: "Export as CSV",
-            desc: "Raw data for analysis",
-            fmt: "CSV",
-          },
-        ].map((x) => (
-          <Card
-            key={x.label}
-            className="p-5 shadow-elegant border-border/60 hover:border-primary/30 hover:shadow-glow transition-all cursor-pointer group"
-            onClick={() => exportReport(x.fmt)}
-          >
-            <div className="size-11 rounded-xl bg-primary-soft text-primary flex items-center justify-center group-hover:gradient-primary group-hover:text-primary-foreground transition-colors">
-              <x.icon className="size-5" />
+      {/* Export Action Cards */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <Card
+          className="p-5 shadow-elegant border-border/60 hover:border-primary/40 hover:shadow-glow transition-all cursor-pointer group"
+          onClick={printOfficialReport}
+        >
+          <div className="flex items-start gap-4">
+            <div className="size-11 rounded-xl bg-primary-soft text-primary flex items-center justify-center group-hover:gradient-primary group-hover:text-primary-foreground transition-colors shrink-0 mt-0.5">
+              <Printer className="size-5" />
             </div>
-            <div className="mt-4 font-display font-semibold">{x.label}</div>
-            <div className="text-sm text-muted-foreground">{x.desc}</div>
-          </Card>
-        ))}
+            <div className="flex-1 min-w-0">
+              <div className="font-display font-semibold text-foreground group-hover:text-primary transition-colors">
+                Print PDF Report
+              </div>
+              <div className="text-xs text-muted-foreground mt-0.5">
+                Formatted {docFormat.trim() || "A4"} document for tourism office.
+              </div>
+              <div
+                className="flex items-center gap-2 mt-2.5"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <span className="text-[11px] text-muted-foreground whitespace-nowrap">Format:</span>
+                <Input
+                  value={docFormat}
+                  onChange={(e) => setDocFormat(e.target.value)}
+                  placeholder="e.g. A4, Letter, Legal"
+                  className="h-6 w-24 text-xs px-2 py-0 bg-background"
+                />
+                <div className="flex items-center gap-1">
+                  {["A4", "Letter", "Legal"].map((fmt) => (
+                    <button
+                      key={fmt}
+                      type="button"
+                      onClick={() => setDocFormat(fmt)}
+                      className={`text-[10px] px-1.5 py-0.5 rounded border transition-colors ${
+                        docFormat === fmt
+                          ? "bg-primary text-primary-foreground border-primary"
+                          : "bg-muted/60 text-muted-foreground hover:bg-muted border-border"
+                      }`}
+                    >
+                      {fmt}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </div>
+        </Card>
+
+        <Card
+          className="p-5 shadow-elegant border-border/60 hover:border-primary/40 hover:shadow-glow transition-all cursor-pointer group"
+          onClick={exportCsv}
+        >
+          <div className="flex items-center gap-4">
+            <div className="size-11 rounded-xl bg-primary-soft text-primary flex items-center justify-center group-hover:gradient-primary group-hover:text-primary-foreground transition-colors shrink-0">
+              <FileDown className="size-5" />
+            </div>
+            <div>
+              <div className="font-display font-semibold text-foreground group-hover:text-primary transition-colors">
+                Export Raw Data as CSV
+              </div>
+              <div className="text-xs text-muted-foreground mt-0.5">
+                Full tabular breakdown for Excel and Google Sheets.
+              </div>
+            </div>
+          </div>
+        </Card>
       </div>
 
       {reportData && (
         <SectionCard
-          title={`Report preview — ${range.charAt(0).toUpperCase() + range.slice(1)}`}
+          title={`Report preview — ${range.charAt(0).toUpperCase() + range.slice(1)} (${dateFrom || "Start"} to ${dateTo || "Present"})`}
         >
           <Table>
             <TableHeader>
@@ -296,7 +505,7 @@ export function Reports({ range: globalRange }: { range: DateRange }) {
                   <TableCell>{r.manifestos.toLocaleString()}</TableCell>
                   <TableCell>{r.dives.toLocaleString()}</TableCell>
                   <TableCell className="text-right font-mono">
-                    {`\u20B1${r.revenue.toLocaleString()}`}
+                    {formatPhp(r.revenue)}
                   </TableCell>
                 </TableRow>
               ))}
@@ -356,5 +565,3 @@ export function Reports({ range: globalRange }: { range: DateRange }) {
     </div>
   );
 }
-
-

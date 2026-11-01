@@ -123,15 +123,20 @@ export interface DiveActivityMetrics {
     maxCapacity: number;
     actualDives: number;
   }>;
+  hourly?: Array<{ hour: string; manifests: number; dives: number }>;
+  depths?: Array<{ range: string; count: number; divers?: number }>;
 }
 
 export interface DivePassMetrics {
   revenue: number;
   revenuePrev: number;
   creditsUsed: number;
+  creditsUsedPrev?: number;
+  lifetimeUsed?: number;
   purchased: number;
   remaining: number;
   pendingReceipts: number;
+  pendingAmount?: number;
   oldestPendingReceiptDays: number;
   dailyRevenue: DailyRevenue[];
   inventory: DailyInventory[];
@@ -149,7 +154,9 @@ export interface EstablishmentMetricRow {
   location: string;
   status: string;
   manifestos: number;
+  divers?: number;
   creditBalance: number;
+  remainingCredits?: number;
   createdAt: string;
 }
 
@@ -179,6 +186,7 @@ export interface OperatorMetricRow {
 
 export interface OperatorMetrics {
   active: number;
+  activePrev?: number;
   operators: number;
   manifestos: number;
   manifestosPrev: number;
@@ -411,10 +419,12 @@ export function normalizeDiveType(
 
 export function normalizeSeason(raw: string | null | undefined): string {
   const s = String(raw ?? "").toLowerCase();
-  if (s.startsWith("sum")) return "Summer";
-  if (s.startsWith("aut")) return "Autumn";
-  if (s.startsWith("win")) return "Winter";
-  if (s.startsWith("spr")) return "Spring";
+  if (s.includes("amihan")) return "Amihan (Dry & Calm)";
+  if (s.includes("habagat")) return "Habagat (Monsoon/Low)";
+  if (s.includes("summer")) return "Summer (Peak Season)";
+  if (s.startsWith("win")) return "Amihan (Dry & Calm)";
+  if (s.startsWith("spr")) return "Summer (Peak Season)";
+  if (s.startsWith("aut")) return "Habagat (Monsoon/Low)";
   return raw || "Unknown";
 }
 

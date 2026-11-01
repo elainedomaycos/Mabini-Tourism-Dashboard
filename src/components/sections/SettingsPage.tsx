@@ -77,6 +77,8 @@ import {
   auditActionType,
   pushAuditLog,
 } from "@/lib/audit";
+import { downloadCsv } from "@/lib/export-utils";
+import { todayInManila, clampDateToToday } from "@/lib/period";
 import {
   useStaffSessionValue,
   requireLiveSession,
@@ -549,19 +551,17 @@ export function SettingsPage() {
   } = usePagination(filteredLogs, 10);
 
   const exportCsv = () => {
-    const header = "Date,Time,User,Action,Type";
-    const rows = filteredLogs.map(
-      (l) =>
-        `${l.date},${l.t},"${l.who}","${l.action.replace(/"/g, '""')}","${auditActionType(l.action)}"`,
-    );
-    const csv = [header, ...rows].join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `audit-logs-${auditDateFrom || "all"}${auditDateTo ? `-to-${auditDateTo}` : ""}.csv`;
-    a.click();
-    URL.revokeObjectURL(url);
+    if (filteredLogs.length === 0) return;
+    const filename = `mabini-audit-logs-${auditDateFrom || "all"}${auditDateTo ? `-to-${auditDateTo}` : ""}.csv`;
+    const headers = ["Date", "Time", "User", "Action", "Action Type"];
+    const rows = filteredLogs.map((l) => [
+      l.date,
+      l.t,
+      l.who,
+      l.action,
+      auditActionType(l.action),
+    ]);
+    downloadCsv(filename, headers, rows);
     toast.success("Audit logs exported", {
       description: `${filteredLogs.length} entries saved as CSV.`,
     });
@@ -1252,8 +1252,9 @@ export function SettingsPage() {
             </Label>
             <Input
               type="date"
+              max={auditDateTo || todayInManila()}
               value={auditDateFrom}
-              onChange={(e) => setAuditDateFrom(e.target.value)}
+              onChange={(e) => setAuditDateFrom(clampDateToToday(e.target.value))}
               className="w-40"
             />
           </div>
@@ -1263,8 +1264,10 @@ export function SettingsPage() {
             </Label>
             <Input
               type="date"
+              min={auditDateFrom || undefined}
+              max={todayInManila()}
               value={auditDateTo}
-              onChange={(e) => setAuditDateTo(e.target.value)}
+              onChange={(e) => setAuditDateTo(clampDateToToday(e.target.value))}
               className="w-40"
             />
           </div>
