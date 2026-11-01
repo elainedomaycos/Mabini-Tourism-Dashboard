@@ -1,8 +1,8 @@
 import { Waves, ScrollText, MapPin } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useFilters } from "@/routes/index";
-import { ManifestoView } from "@/routes/index";
-import { DiveSiteMgmt } from "@/routes/index";
+import { useFilters } from "@/hooks/useFilters";
+import { ManifestoView } from "./dive-ops/ManifestoView";
+import { DiveSiteMgmt } from "./dive-ops/DiveSiteMgmt";
 import { Reveal, StatCard } from "@/components/shared";
 import {
   useLiveMode,

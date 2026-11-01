@@ -426,3 +426,52 @@ export function DrilldownDialog({
     </Dialog>
   );
 }
+
+
+export function DataSourceBadge({
+  live,
+  isError = false,
+  isLoading = false,
+}: {
+  live: boolean;
+  isError?: boolean;
+  isLoading?: boolean;
+}) {
+  if (!live) {
+    return (
+      <span
+        title="Supabase is not configured — showing built-in demo data"
+        className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-xs font-medium text-amber-700 dark:text-amber-400"
+      >
+        <span className="size-1.5 rounded-full bg-amber-500" />
+        Demo data
+      </span>
+    );
+  }
+  if (isError) {
+    return (
+      <span
+        title="Live query failed — showing demo fallback. Check the Supabase connection."
+        className="inline-flex items-center gap-1.5 rounded-full border border-destructive/30 bg-destructive/10 px-2.5 py-1 text-xs font-medium text-destructive"
+      >
+        <span className="size-1.5 rounded-full bg-destructive" />
+        Live error — demo fallback
+      </span>
+    );
+  }
+  return (
+    <span
+      title={
+        isLoading
+          ? "Connected to Supabase — loading live data"
+          : "Connected to Supabase — showing live data"
+      }
+      className="inline-flex items-center gap-1.5 rounded-full border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-1 text-xs font-medium text-emerald-700 dark:text-emerald-400"
+    >
+      <span
+        className={`size-1.5 rounded-full bg-emerald-500 ${isLoading ? "animate-pulse" : ""}`}
+      />
+      Live
+    </span>
+  );
+}

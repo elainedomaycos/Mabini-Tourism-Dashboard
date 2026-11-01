@@ -2,8 +2,9 @@ import { useEffect, useState } from "react";
 import { Building2 } from "lucide-react";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Badge } from "@/components/ui/badge";
-import { useFilters } from "@/routes/index";
-import { usePermission, OperatorMgmt } from "@/routes/index";
+import { useFilters } from "@/hooks/useFilters";
+import { usePermission } from "@/hooks/usePermission";
+import { OperatorMgmt } from "./operators/OperatorMgmt";
 import { Establishments } from "@/components/sections/Establishments";
 import { Reveal, StatCard } from "@/components/shared";
 import {
