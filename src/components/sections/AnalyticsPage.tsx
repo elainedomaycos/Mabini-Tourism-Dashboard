@@ -2,13 +2,13 @@ import { useEffect } from "react";
 import { useIsFetching } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useFilters } from "@/routes/index";
+import { useFilters } from "@/hooks/useFilters";
 import { TouristAnalytics } from "@/components/sections/TouristAnalytics";
 import { DiveActivityAnalytics } from "@/components/sections/DiveActivityAnalytics";
 import { DivePassAnalytics } from "@/components/sections/DivePassAnalytics";
 import { EstablishmentAnalytics } from "@/components/sections/EstablishmentAnalytics";
-import { OperatorAnalytics } from "@/routes/index";
-import { Reports } from "@/routes/index";
+import { OperatorAnalytics } from "./analytics/OperatorAnalytics";
+import { Reports } from "./analytics/Reports";
 import type { DateRange } from "@/lib/period";
 
 export function AnalyticsPage({ range }: { range: DateRange }) {

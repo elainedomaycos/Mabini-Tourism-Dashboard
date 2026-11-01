@@ -38,3 +38,27 @@ export const DIVING_TYPE_LABELS: Record<DivingTypeKey, string> = {
   training: "Training",
   freediver: "Freediver",
 };
+
+
+export const toSiteView = (s: any) => {
+  const types: string[] =
+    s.siteTypes ?? s.types ?? (s.type && s.type !== "—" ? [s.type] : []);
+  return {
+    _dbId: s._dbId,
+    id: s.siteCode ?? s.id ?? "—",
+    name: s.name,
+    barangay: s.barangay ?? "—",
+    depth: s.depthRange ?? s.depth ?? "—",
+    difficulty: s.difficulty ?? "—",
+    type: types[0] ?? "—",
+    types,
+    status: s.status,
+    dives: s.dives ?? 0,
+    description: s.description ?? "",
+    photo: s.photo ?? null,
+    photoPath: s.photoUrl ?? null,
+    lat: s.lat,
+    lng: s.lng,
+    createdAt: s.createdAt ?? null,
+  };
+};

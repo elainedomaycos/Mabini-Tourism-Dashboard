@@ -7,11 +7,9 @@ import {
   Ticket,
   AlertCircle,
 } from "lucide-react";
-import {
-  ReceiptVerification,
-  usePermission,
-  pushAuditLog,
-} from "@/routes/index";
+import { ReceiptVerification } from "./operators/ReceiptVerification";
+import { usePermission } from "@/hooks/usePermission";
+import { pushAuditLog } from "@/lib/audit";
 import { Reveal, StatCard } from "@/components/shared";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
