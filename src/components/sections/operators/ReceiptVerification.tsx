@@ -74,6 +74,7 @@ import {
 import { useFilters } from "@/hooks/useFilters";
 import { usePermission } from "@/hooks/usePermission";
 import { useGlobalDateRange } from "@/hooks/useGlobalDateRange";
+import { todayInManila, clampDateToToday } from "@/lib/period";
 import { pushAuditLog } from "@/lib/audit";
 import { requireLiveSession } from "@/lib/staff-auth";
 import {
@@ -490,8 +491,11 @@ export function ReceiptVerification() {
             </Label>
             <Input
               type="date"
+              max={search.dateTo || todayInManila()}
               value={search.dateFrom}
-              onChange={(e) => setFilters({ dateFrom: e.target.value })}
+              onChange={(e) =>
+                setFilters({ dateFrom: clampDateToToday(e.target.value) })
+              }
               className="w-40"
             />
           </div>
@@ -501,8 +505,12 @@ export function ReceiptVerification() {
             </Label>
             <Input
               type="date"
+              min={search.dateFrom || undefined}
+              max={todayInManila()}
               value={search.dateTo}
-              onChange={(e) => setFilters({ dateTo: e.target.value })}
+              onChange={(e) =>
+                setFilters({ dateTo: clampDateToToday(e.target.value) })
+              }
               className="w-40"
             />
           </div>

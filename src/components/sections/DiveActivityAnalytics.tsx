@@ -82,10 +82,9 @@ const hourlyActivity = [
 ];
 
 const seasonalTrends = [
-  { season: "Summer", dives: 1840, tourists: 420 },
-  { season: "Autumn", dives: 1120, tourists: 280 },
-  { season: "Winter", dives: 760, tourists: 190 },
-  { season: "Spring", dives: 1480, tourists: 360 },
+  { season: "Amihan (Dry & Calm)", dives: 2480, tourists: 560 },
+  { season: "Summer (Peak Season)", dives: 1840, tourists: 420 },
+  { season: "Habagat (Monsoon/Low)", dives: 880, tourists: 210 },
 ];
 
 const siteByType = [
@@ -192,6 +191,20 @@ export function DiveActivityAnalytics({ range }: { range: DateRange }) {
   }, [m, isDemo]);
 
   const capacityDataLive = m ? m.capacity : isDemo ? capacityData : [];
+
+  const hourlyData = useMemo(() => {
+    if (m?.hourly && m.hourly.length > 0) {
+      return m.hourly;
+    }
+    return isDemo ? hourlyActivity : [];
+  }, [m?.hourly, isDemo]);
+
+  const depthData = useMemo(() => {
+    if (m?.depths && m.depths.length > 0) {
+      return m.depths;
+    }
+    return isDemo ? depthDistribution : [];
+  }, [m?.depths, isDemo]);
 
   const maxSeasonDives = Math.max(1, ...seasonalData.map((s) => s.dives));
 
@@ -329,14 +342,18 @@ export function DiveActivityAnalytics({ range }: { range: DateRange }) {
         </Reveal>
 
         <Reveal delay={120}>
-          <SectionCard title="Depth Distribution" sample>
-            {isEmptyChartData(depthDistribution) ? (
+          <SectionCard
+            title="Depth Distribution"
+            subtitle="Dives grouped by destination site depth rating."
+            sample={isDemo && !m?.depths?.length}
+          >
+            {isEmptyChartData(depthData) ? (
               <ChartEmptyState className="h-[300px]" />
             ) : (
             <div className="h-[300px]">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart
-                  data={depthDistribution}
+                  data={depthData}
                   layout="vertical"
                   margin={{ left: 10, right: 20 }}
                 >
@@ -349,7 +366,7 @@ export function DiveActivityAnalytics({ range }: { range: DateRange }) {
                   <YAxis
                     dataKey="range"
                     type="category"
-                    width={55}
+                    width={90}
                     {...chartAxisProps}
                   />
                   <Tooltip
@@ -371,14 +388,18 @@ export function DiveActivityAnalytics({ range }: { range: DateRange }) {
       </div>
 
       <Reveal delay={160}>
-        <SectionCard title="Hourly Activity Pattern" sample>
-          {isEmptyChartData(hourlyActivity) ? (
+        <SectionCard
+          title="Hourly Activity Pattern"
+          subtitle="Boat departure hours from filed manifests (Asia/Manila)."
+          sample={isDemo && !m?.hourly?.length}
+        >
+          {isEmptyChartData(hourlyData) ? (
             <ChartEmptyState className="h-[260px]" />
           ) : (
           <div className="h-[260px]">
             <ResponsiveContainer width="100%" height="100%">
               <AreaChart
-                data={hourlyActivity}
+                data={hourlyData}
                 margin={{ top: 5, right: 10, left: 0, bottom: 0 }}
               >
                 <defs>
@@ -455,8 +476,11 @@ export function DiveActivityAnalytics({ range }: { range: DateRange }) {
         </Reveal>
 
         <Reveal delay={240}>
-          <SectionCard title="Seasonal Trends">
-            <div className="grid grid-cols-2 gap-3">
+          <SectionCard
+            title="Seasonal Trends"
+            subtitle="Philippine monsoon and tropical tourism cycles."
+          >
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
               {seasonalData.map((s) => (
                 <Card
                   key={s.season}

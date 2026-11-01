@@ -1,5 +1,5 @@
 import { useMemo } from "react";
-import { CreditCard, TrendingUp } from "lucide-react";
+import { CreditCard, TrendingUp, Clock, AlertTriangle } from "lucide-react";
 import {
   SectionCard,
   StatCard,
@@ -65,10 +65,10 @@ function periodKeyOf(t: string): "day" | "weekly" | "monthly" | "annual" | null 
 }
 
 const passTypeDistribution = [
-  { type: "Day", count: 8, revenue: 240 },
-  { type: "Weekly", count: 5, revenue: 500 },
-  { type: "Monthly", count: 10, revenue: 2000 },
-  { type: "Annual", count: 4, revenue: 4000 },
+  { type: "Day", count: 8, amount: 240 },
+  { type: "Weekly", count: 5, amount: 500 },
+  { type: "Monthly", count: 10, amount: 2000 },
+  { type: "Annual", count: 4, amount: 4000 },
 ];
 
 const creditsUtilization = [
@@ -105,8 +105,13 @@ export function DivePassAnalytics({ range }: { range: DateRange }) {
   const revenueTotal = m?.revenue ?? 0;
   const revDelta = m ? m.revenue - m.revenuePrev : 0;
   const inUse = m?.creditsUsed ?? 0;
+  const creditsDelta =
+    m && m.creditsUsedPrev !== undefined ? m.creditsUsed - m.creditsUsedPrev : 0;
   const purchased = m?.purchased ?? 0;
   const remaining = m?.remaining ?? 0;
+  const pendingReceipts = m?.pendingReceipts ?? 0;
+  const pendingAmount = m?.pendingAmount ?? 0;
+  const oldestPendingDays = m?.oldestPendingReceiptDays ?? 0;
   const avgCreditsUsed =
     purchased > 0 ? Math.round((inUse / purchased) * 100) : null;
 
@@ -116,6 +121,7 @@ export function DivePassAnalytics({ range }: { range: DateRange }) {
     return m.passTypes.map((row) => ({
       type: row.type,
       count: row.purchased,
+      amount: row.amount ?? 0,
     }));
   }, [m, isDemo]);
 
@@ -202,7 +208,7 @@ export function DivePassAnalytics({ range }: { range: DateRange }) {
         <InsightWidget insight={passInsight} label="Dive Pass" />
 
         <Reveal>
-        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
           <StatCard
             icon={CreditCard}
             label="Verified Revenue"
@@ -226,7 +232,13 @@ export function DivePassAnalytics({ range }: { range: DateRange }) {
             icon={TrendingUp}
             label="Credits Used"
             value={isLive ? (isLiveData ? String(inUse) : "-") : "17"}
-            deltaLabel="lifetime to date"
+            delta={
+              isLiveData && m?.creditsUsedPrev !== undefined
+                ? `${creditsDelta >= 0 ? "+" : ""}${creditsDelta}`
+                : undefined
+            }
+            deltaLabel="vs previous period"
+            up={creditsDelta >= 0}
             sample={isDemo}
           />
           <StatCard
@@ -241,12 +253,39 @@ export function DivePassAnalytics({ range }: { range: DateRange }) {
             }
             sample={isDemo}
           />
+          <StatCard
+            icon={Clock}
+            label="Pending Review Queue"
+            value={
+              isLive
+                ? isLiveData
+                  ? `\u20B1${Math.round(pendingAmount).toLocaleString()}`
+                  : "-"
+                : "\u20B12,400"
+            }
+            delta={
+              isLiveData && pendingReceipts > 0
+                ? `${pendingReceipts} receipt${pendingReceipts !== 1 ? "s" : ""}`
+                : undefined
+            }
+            deltaLabel={
+              oldestPendingDays > 0
+                ? `oldest ${oldestPendingDays}d ago`
+                : "all clear"
+            }
+            up={pendingReceipts === 0}
+            sample={isDemo}
+          />
         </div>
       </Reveal>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <Reveal delay={80}>
-          <SectionCard title="Pass Type Distribution" sample={isDemo}>
+          <SectionCard
+            title="Pass Type Distribution"
+            subtitle="Purchased volume and revenue contribution per tier."
+            sample={isDemo && !m?.passTypes?.length}
+          >
             {isEmptyChartData(passTypeData) ? (
               <ChartEmptyState className="h-[200px]" />
             ) : (
@@ -265,7 +304,7 @@ export function DivePassAnalytics({ range }: { range: DateRange }) {
                       strokeWidth={2}
                     >
                       {passTypeData.map((_, i) => (
-                        <Cell key={i} fill={CHART_COLORS[i]} />
+                        <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />
                       ))}
                     </Pie>
                     <Tooltip contentStyle={chartTooltipStyle} />
@@ -281,12 +320,17 @@ export function DivePassAnalytics({ range }: { range: DateRange }) {
                     <div className="flex items-center gap-2">
                       <span
                         className="size-2.5 rounded-sm"
-                        style={{ background: CHART_COLORS[i] }}
+                        style={{ background: CHART_COLORS[i % CHART_COLORS.length] }}
                       />
                       <span>{p.type}</span>
                     </div>
                     <div className="flex items-center gap-3">
                       <span className="font-medium">{p.count} passes</span>
+                      {p.amount > 0 && (
+                        <span className="text-xs text-muted-foreground font-mono">
+                          ₱{Math.round(p.amount).toLocaleString()}
+                        </span>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -297,7 +341,11 @@ export function DivePassAnalytics({ range }: { range: DateRange }) {
         </Reveal>
 
         <Reveal delay={120}>
-          <SectionCard title="Credits Utilization" sample={isDemo}>
+          <SectionCard
+            title="Credits Utilization"
+            subtitle="Purchased volume vs redeemed credits per pass tier."
+            sample={isDemo && !m?.passTypes?.length}
+          >
             {isEmptyChartData(creditsData) ? (
               <ChartEmptyState className="h-[200px]" />
             ) : (
@@ -343,8 +391,8 @@ export function DivePassAnalytics({ range }: { range: DateRange }) {
         <Reveal delay={200}>
           <SectionCard
             title="Pass Purchases by Type"
-            subtitle="Inventory purchase amounts, not verified receipts."
-            sample={isDemo}
+            subtitle="Purchased pass volume across time buckets."
+            sample={isDemo && !m?.inventory?.length}
           >
             {isEmptyChartData(revenueByTypeData) ? (
               <ChartEmptyState className="h-[200px]" />
@@ -399,7 +447,11 @@ export function DivePassAnalytics({ range }: { range: DateRange }) {
 
       <div className="grid grid-cols-1 gap-6">
         <Reveal delay={320}>
-          <SectionCard title="Revenue vs Credit Burn Rate" sample={isDemo}>
+          <SectionCard
+            title="Revenue vs Credit Burn Rate"
+            subtitle="Verified receipts cash inflow vs inventory utilization rate."
+            sample={isDemo && !m?.dailyRevenue?.length}
+          >
             {isEmptyChartData(revenueVsBurnData) ? (
               <ChartEmptyState className="h-[200px]" />
             ) : (

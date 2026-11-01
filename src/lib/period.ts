@@ -59,6 +59,21 @@ export function todayInManila(now = new Date()): string {
   return `${get("year")}-${get("month")}-${get("day")}`;
 }
 
+/** Clamps any ISO date string (YYYY-MM-DD) to not exceed maxDate (defaulting to today in Manila). */
+export function clampDateToToday(dateStr: string, maxDate = todayInManila()): string {
+  if (!dateStr) return dateStr;
+  const trimmed = dateStr.trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return trimmed;
+  return trimmed > maxDate ? maxDate : trimmed;
+}
+
+/** Returns true if the ISO date string represents a date past today in Manila. */
+export function isFutureDate(dateStr: string, maxDate = todayInManila()): boolean {
+  if (!dateStr) return false;
+  const trimmed = dateStr.trim();
+  return /^\d{4}-\d{2}-\d{2}$/.test(trimmed) && trimmed > maxDate;
+}
+
 /** Add/subtract calendar days without DST or timezone drift. */
 export function addDaysIso(value: string, days: number): string {
   const d = dateOnlyUtc(value);
@@ -149,9 +164,19 @@ export function resolveDateRange(
     from = fallbackFrom;
     to = today;
     invalid = true;
-  } else if (from > to) {
-    [from, to] = [to, from];
-    invalid = true;
+  } else {
+    if (to > today) {
+      to = today;
+      invalid = true;
+    }
+    if (from > today) {
+      from = today;
+      invalid = true;
+    }
+    if (from > to) {
+      [from, to] = [to, from];
+      invalid = true;
+    }
   }
   return {
     preset: "custom",

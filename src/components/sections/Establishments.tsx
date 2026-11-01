@@ -12,6 +12,7 @@ import {
   CreditCard,
   AlertTriangle,
   CheckCircle2,
+  Download,
 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -59,6 +60,7 @@ import {
   dbErrorMessage,
 } from "@/lib/queries";
 import { toast } from "sonner";
+import { downloadCsv } from "@/lib/export-utils";
 
 type Establishment = {
   _dbId?: string;
@@ -579,6 +581,42 @@ export function Establishments() {
     toast.success(`Renewal request submitted for ${est.name}.`);
   }
 
+  const handleExportCsv = () => {
+    if (filtered.length === 0) return;
+    const filename = `mabini-establishments-${new Date().toISOString().slice(0, 10)}.csv`;
+    const headers = [
+      "Establishment ID",
+      "Business Name",
+      "Owner",
+      "Barangay",
+      "Permit Number",
+      "Permit Expiry",
+      "Contact Email",
+      "Contact Phone",
+      "Total Manifestos",
+      "Status",
+    ];
+    const rows = filtered.map((e) => [
+      e.id,
+      e.name,
+      e.owner,
+      e.barangay,
+      e.permitNumber,
+      e.permitExpiry,
+      e.contactEmail,
+      e.contactPhone,
+      e.totalManifestos,
+      e.status,
+    ]);
+    downloadCsv(filename, headers, rows);
+    pushAuditLog(
+      `Exported filtered establishments (${filtered.length} records) to CSV`,
+    );
+    toast.success("Establishment registry exported", {
+      description: `Downloaded ${filtered.length} establishments as CSV.`,
+    });
+  };
+
   return (
     <div className="space-y-6">
       <Reveal>
@@ -623,6 +661,16 @@ export function Establishments() {
                   ))}
                 </SelectContent>
               </Select>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleExportCsv}
+                disabled={establishmentsSource.isLoading || filtered.length === 0}
+                className="h-8 gap-1.5 text-xs shrink-0"
+              >
+                <Download className="size-3.5" />
+                Export CSV ({filtered.length})
+              </Button>
             </div>
           }
         >

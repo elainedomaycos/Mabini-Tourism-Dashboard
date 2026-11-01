@@ -48,6 +48,7 @@ import {
 import { useFilters } from "@/hooks/useFilters";
 import { usePermission, useRole, ROLE_META } from "@/hooks/usePermission";
 import { useGlobalDateRange } from "@/hooks/useGlobalDateRange";
+import { todayInManila, clampDateToToday } from "@/lib/period";
 import { DataSourceBadge } from "@/components/shared";
 
 import {
@@ -102,12 +103,24 @@ const searchSchema = z.object({
   site: z.string().default("All"),
   difficulty: z.string().default("All"),
   siteType: z.string().default("All"),
-  dateFrom: z.string().default(""),
-  dateTo: z.string().default(""),
+  dateFrom: z
+    .string()
+    .default("")
+    .transform((v) => clampDateToToday(v)),
+  dateTo: z
+    .string()
+    .default("")
+    .transform((v) => clampDateToToday(v)),
   tab: z.string().default(""),
   globalDateRange: z.enum(["today", "7d", "30d", "custom"]).default("30d"),
-  globalDateFrom: z.string().default(""),
-  globalDateTo: z.string().default(""),
+  globalDateFrom: z
+    .string()
+    .default("")
+    .transform((v) => clampDateToToday(v)),
+  globalDateTo: z
+    .string()
+    .default("")
+    .transform((v) => clampDateToToday(v)),
 });
 
 type Section =
@@ -442,19 +455,24 @@ function DashboardShell({
                 <div className="flex items-center gap-1.5 animate-fade-in">
                   <Input
                     type="date"
+                    max={dr.globalDateTo || todayInManila()}
                     value={dr.globalDateFrom}
-                    onChange={(e) =>
-                      dr.setRange("custom", e.target.value, dr.globalDateTo)
-                    }
+                    onChange={(e) => {
+                      const val = clampDateToToday(e.target.value);
+                      dr.setRange("custom", val, dr.globalDateTo);
+                    }}
                     className="w-[140px] h-8 text-xs"
                   />
                   <span className="text-xs text-muted-foreground">–</span>
                   <Input
                     type="date"
+                    min={dr.globalDateFrom || undefined}
+                    max={todayInManila()}
                     value={dr.globalDateTo}
-                    onChange={(e) =>
-                      dr.setRange("custom", dr.globalDateFrom, e.target.value)
-                    }
+                    onChange={(e) => {
+                      const val = clampDateToToday(e.target.value);
+                      dr.setRange("custom", dr.globalDateFrom, val);
+                    }}
                     className="w-[140px] h-8 text-xs"
                   />
                 </div>

@@ -176,8 +176,8 @@ export function OverviewPage({
   );
   const ovTourists = ovLive ? (touristSample.data ?? []) : tourists;
 
-  const todayDivers = m?.todayDivers ?? 28;
-  const yesterdayDivers = m?.yesterdayDivers ?? 24;
+  const todayDivers = ovLive ? (m?.todayDivers ?? 0) : (m?.todayDivers ?? 28);
+  const yesterdayDivers = ovLive ? (m?.yesterdayDivers ?? 0) : (m?.yesterdayDivers ?? 24);
   const trendData = useMemo(() => {
     if (!m) {
       const start = new Date(`${range.from}T00:00:00Z`);
@@ -556,6 +556,8 @@ export function OverviewPage({
         operatorApps={ovApps}
         manifestos={ovManifests}
         tourists={ovTourists}
+        pendingApplications={ovLive ? m?.pendingApplications : undefined}
+        pendingReceipts={ovLive ? m?.pendingReceipts : undefined}
         expiringPasses={ovLive ? (m?.expiringPasses ?? 0) : undefined}
         setFilters={setFilters}
       />

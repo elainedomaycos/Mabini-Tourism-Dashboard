@@ -74,6 +74,7 @@ import { useFilters } from "@/hooks/useFilters";
 import { usePermission } from "@/hooks/usePermission";
 import { useGlobalDateRange } from "@/hooks/useGlobalDateRange";
 import { pushAuditLog } from "@/lib/audit";
+import { downloadCsv } from "@/lib/export-utils";
 import { requireLiveSession, type StaffSession } from "@/lib/staff-auth";
 import { displayNationality } from "@/lib/metrics";
 import {
@@ -1079,6 +1080,36 @@ export function TouristMgmtPage({ session }: { session?: StaffSession | null }) 
     });
   };
 
+  const handleExportCsv = () => {
+    if (filtered.length === 0) return;
+    const filename = `mabini-tourist-registry-${new Date().toISOString().slice(0, 10)}.csv`;
+    const headers = [
+      "Tourist ID",
+      "Full Name",
+      "Nationality",
+      "Dive Certification Level",
+      "Date Registered",
+      "Expiry Date",
+      "Status",
+    ];
+    const rows = filtered.map((t) => [
+      t.id,
+      t.name,
+      t.nationality ?? "N/A",
+      t.level ?? "N/A",
+      t.registered ?? "N/A",
+      t.expires ?? "N/A",
+      t.status,
+    ]);
+    downloadCsv(filename, headers, rows);
+    pushAuditLog(
+      `Exported filtered tourist registry (${filtered.length} records) to CSV`,
+    );
+    toast.success("Tourist registry exported", {
+      description: `Downloaded ${filtered.length} records as CSV.`,
+    });
+  };
+
   return (
     <div className="space-y-4">
       {/* Search & Filters */}
@@ -1164,12 +1195,24 @@ export function TouristMgmtPage({ session }: { session?: StaffSession | null }) 
         />
       </div>
 
-      <div className="text-xs text-muted-foreground">
-        {touristsSource.isLoading
-          ? "Loading tourists…"
-          : `${filtered.length} of ${visibleTourists.length} tourist${
-              visibleTourists.length !== 1 ? "s" : ""
-            }`}
+      <div className="flex items-center justify-between text-xs text-muted-foreground">
+        <div>
+          {touristsSource.isLoading
+            ? "Loading tourists…"
+            : `${filtered.length} of ${visibleTourists.length} tourist${
+                visibleTourists.length !== 1 ? "s" : ""
+              }`}
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={handleExportCsv}
+          disabled={touristsSource.isLoading || filtered.length === 0}
+          className="h-8 gap-1.5 text-xs"
+        >
+          <Download className="size-3.5" />
+          Export CSV ({filtered.length})
+        </Button>
       </div>
 
       <Card className="shadow-elegant overflow-hidden">
